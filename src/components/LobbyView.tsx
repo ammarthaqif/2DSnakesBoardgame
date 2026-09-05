@@ -1,0 +1,359 @@
+import React, { useState } from 'react';
+import { motion } from 'motion/react';
+import {
+  Play,
+  Trophy,
+  Palette,
+  Flame,
+  PlusCircle,
+  LogIn,
+  Bot,
+  Volume2,
+  VolumeX,
+  Pencil,
+  Clock,
+  Swords,
+  Sparkles,
+} from 'lucide-react';
+import { PlayerProfile, TournamentEvent } from '../types';
+import { SnakeSkinAvatar } from './SnakeSkinAvatar';
+import { sounds } from '../utils/soundEffects';
+
+interface LobbyViewProps {
+  profile: PlayerProfile;
+  tournament: TournamentEvent;
+  isMuted: boolean;
+  onToggleMute: () => void;
+  onQuickMatch: (isTournament?: boolean) => void;
+  onCreateRoom: (roomName: string, timerDuration: 5 | 10, isPrivate: boolean, isTournament: boolean) => void;
+  onJoinRoom: (roomId: string) => void;
+  onOpenSkins: () => void;
+  onOpenLeaderboard: () => void;
+  onOpenTournament: () => void;
+  onEditProfile: () => void;
+}
+
+export const LobbyView: React.FC<LobbyViewProps> = ({
+  profile,
+  tournament,
+  isMuted,
+  onToggleMute,
+  onQuickMatch,
+  onCreateRoom,
+  onJoinRoom,
+  onOpenSkins,
+  onOpenLeaderboard,
+  onOpenTournament,
+  onEditProfile,
+}) => {
+  const [roomCodeInput, setRoomCodeInput] = useState('');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newRoomName, setNewRoomName] = useState(`${profile.username}'s Arena`);
+  const [newRoomTimer, setNewRoomTimer] = useState<5 | 10>(10);
+  const [isPrivateRoom, setIsPrivateRoom] = useState(false);
+
+  const handleJoinSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!roomCodeInput.trim()) return;
+    sounds.playDiceRoll();
+    onJoinRoom(roomCodeInput.trim().toUpperCase());
+  };
+
+  const handleCreateSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    sounds.playDiceRoll();
+    onCreateRoom(newRoomName, newRoomTimer, isPrivateRoom, false);
+    setShowCreateModal(false);
+  };
+
+  return (
+    <div id="lobby-view" className="w-full max-w-md mx-auto space-y-3 pb-8">
+      {/* Top Bar: Profile Summary & Utility Buttons */}
+      <div className="flex items-center justify-between p-3 bg-slate-900/90 rounded-2xl border border-slate-800 shadow-lg">
+        <div
+          id="profile-badge-btn"
+          onClick={onEditProfile}
+          className="flex items-center gap-2.5 cursor-pointer group"
+          title="Edit serpent profile"
+        >
+          <div className="relative">
+            <SnakeSkinAvatar skinId={profile.skinId} size="lg" />
+            <div className="absolute -bottom-1 -right-1 bg-slate-800 rounded-full p-0.5 border border-slate-700 text-slate-300 group-hover:text-cyan-400">
+              <Pencil className="w-2.5 h-2.5" />
+            </div>
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-black text-slate-100 group-hover:text-cyan-400 transition-colors">
+                {profile.username}
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono font-bold">
+                Lv.{profile.level}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span className="flex items-center gap-1 text-amber-400 font-mono font-bold">
+                <Trophy className="w-3 h-3" /> {profile.trophies}
+              </span>
+              <span>•</span>
+              <span>{profile.matchesWon} Wins</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Mute and Settings */}
+        <div className="flex items-center gap-1.5">
+          <button
+            id="toggle-audio-btn"
+            onClick={onToggleMute}
+            className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-100 transition-colors"
+            title={isMuted ? 'Unmute Sound' : 'Mute Sound'}
+          >
+            {isMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-emerald-400" />}
+          </button>
+        </div>
+      </div>
+
+      {/* Seasonal Tournament Callout Banner */}
+      <motion.div
+        id="tournament-callout-card"
+        whileHover={{ scale: 1.01 }}
+        whileTap={{ scale: 0.99 }}
+        onClick={onOpenTournament}
+        className="cursor-pointer p-4 rounded-2xl bg-gradient-to-r from-amber-950/80 via-slate-900 to-amber-950/80 border border-amber-500/50 shadow-xl shadow-amber-950/30 flex items-center justify-between gap-3 relative overflow-hidden"
+      >
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-amber-400">
+            <Flame className="w-3.5 h-3.5" />
+            <span>Seasonal Tournament Active</span>
+          </div>
+          <div className="text-sm font-black text-slate-100">{tournament.title}</div>
+          <p className="text-[11px] text-slate-400 line-clamp-1">{tournament.bonusRule}</p>
+        </div>
+
+        <div className="shrink-0 flex items-center gap-2">
+          <span className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-black text-xs shadow-md flex items-center gap-1">
+            <Swords className="w-3.5 h-3.5" />
+            <span>Event</span>
+          </span>
+        </div>
+      </motion.div>
+
+      {/* Main Action Buttons */}
+      <div className="space-y-2.5">
+        {/* Quick Match - 1 Tap Play */}
+        <button
+          id="lobby-quick-match-btn"
+          onClick={() => {
+            sounds.playDiceRoll();
+            onQuickMatch(false);
+          }}
+          className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-black text-base tracking-wide shadow-xl shadow-emerald-500/20 flex items-center justify-between transition-all active:scale-98"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-slate-950/20 flex items-center justify-center">
+              <Play className="w-5 h-5 fill-slate-950" />
+            </div>
+            <div className="text-left">
+              <div className="leading-tight">QUICK MATCH</div>
+              <div className="text-[11px] font-semibold text-slate-900/80">Play online immediately</div>
+            </div>
+          </div>
+          <span className="text-xl">🎲</span>
+        </button>
+
+        {/* Tournament Ranked Match */}
+        <button
+          id="lobby-tournament-match-btn"
+          onClick={() => {
+            sounds.playDiceRoll();
+            onQuickMatch(true);
+          }}
+          className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black text-sm tracking-wide shadow-lg shadow-amber-500/20 flex items-center justify-between transition-all active:scale-98"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-slate-950/20 flex items-center justify-center">
+              <Swords className="w-4 h-4" />
+            </div>
+            <div className="text-left">
+              <div className="leading-tight">TOURNAMENT MATCH</div>
+              <div className="text-[10px] font-semibold text-slate-900/80">2x Season Points & Trophy Rating</div>
+            </div>
+          </div>
+          <Sparkles className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Navigation Submenu: Skins & Rankings */}
+      <div className="grid grid-cols-2 gap-2.5">
+        <button
+          id="lobby-open-skins-btn"
+          onClick={onOpenSkins}
+          className="p-3 rounded-2xl bg-slate-900/90 hover:bg-slate-800/90 border border-slate-800 flex items-center gap-2.5 transition-all text-left shadow-md group"
+        >
+          <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 group-hover:bg-cyan-500/20 transition-colors">
+            <Palette className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-xs font-bold text-slate-100">Snake Skins</div>
+            <div className="text-[10px] text-slate-400">Armory & Customizer</div>
+          </div>
+        </button>
+
+        <button
+          id="lobby-open-rankings-btn"
+          onClick={onOpenLeaderboard}
+          className="p-3 rounded-2xl bg-slate-900/90 hover:bg-slate-800/90 border border-slate-800 flex items-center gap-2.5 transition-all text-left shadow-md group"
+        >
+          <div className="p-2 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20 group-hover:bg-amber-500/20 transition-colors">
+            <Trophy className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-xs font-bold text-slate-100">Leaderboard</div>
+            <div className="text-[10px] text-slate-400">Global Rankings</div>
+          </div>
+        </button>
+      </div>
+
+      {/* Custom Room Creation & Join Room Code */}
+      <div className="p-4 bg-slate-900/70 rounded-2xl border border-slate-800 space-y-3">
+        <div className="text-xs font-bold uppercase tracking-wider text-slate-300">
+          Private Room with Friends
+        </div>
+
+        {/* Join by code form */}
+        <form onSubmit={handleJoinSubmit} className="flex gap-2">
+          <input
+            id="room-code-input"
+            type="text"
+            placeholder="Enter Room Code (e.g. ROOM-1234)"
+            value={roomCodeInput}
+            onChange={(e) => setRoomCodeInput(e.target.value)}
+            className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono font-bold text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-400 uppercase"
+          />
+          <button
+            id="join-room-code-btn"
+            type="submit"
+            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold rounded-xl text-xs flex items-center gap-1 transition-colors"
+          >
+            <LogIn className="w-3.5 h-3.5" />
+            <span>Join</span>
+          </button>
+        </form>
+
+        <button
+          id="create-custom-room-btn"
+          onClick={() => setShowCreateModal(true)}
+          className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors"
+        >
+          <PlusCircle className="w-3.5 h-3.5 text-cyan-400" />
+          <span>Create Custom Room & Select Timer</span>
+        </button>
+      </div>
+
+      {/* How to Play Quick Card */}
+      <div className="p-3.5 bg-slate-950/60 rounded-2xl border border-slate-800/80 text-xs text-slate-400 space-y-1.5 leading-relaxed">
+        <div className="font-bold text-slate-300 flex items-center gap-1">
+          <span>🧠</span>
+          <span>Math Mechanics Guide</span>
+        </div>
+        <p>
+          • <strong>Dice Roll:</strong> Answer <em>Current Tile + Dice Roll</em> within timer to advance!
+        </p>
+        <p>
+          • <strong>Snake Bite:</strong> Slid down? Answer <em>Head - Tail</em> to unlock a <strong>Bonus Question for an EXTRA DICE THROW!</strong>
+        </p>
+        <p>
+          • <strong>Ladder:</strong> Land on base to climb straight to the top!
+        </p>
+      </div>
+
+      {/* Custom Room Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-950/85 backdrop-blur-sm">
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl space-y-4"
+          >
+            <h3 className="text-base font-bold text-slate-100">Create Match Room</h3>
+
+            <form onSubmit={handleCreateSubmit} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">Room Name</label>
+                <input
+                  type="text"
+                  value={newRoomName}
+                  onChange={(e) => setNewRoomName(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-semibold"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">
+                  Math Challenge Timer Preset
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewRoomTimer(5)}
+                    className={`py-2 px-3 rounded-xl border text-center font-bold transition-all flex items-center justify-center gap-1.5 ${
+                      newRoomTimer === 5
+                        ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300'
+                        : 'border-slate-800 bg-slate-950 text-slate-400'
+                    }`}
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>5 Seconds (Blitz)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewRoomTimer(10)}
+                    className={`py-2 px-3 rounded-xl border text-center font-bold transition-all flex items-center justify-center gap-1.5 ${
+                      newRoomTimer === 10
+                        ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300'
+                        : 'border-slate-800 bg-slate-950 text-slate-400'
+                    }`}
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>10 Seconds (Standard)</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="private-chk"
+                  checked={isPrivateRoom}
+                  onChange={(e) => setIsPrivateRoom(e.target.checked)}
+                  className="rounded bg-slate-950 border-slate-700 text-cyan-500 focus:ring-0"
+                />
+                <label htmlFor="private-chk" className="text-slate-300 cursor-pointer">
+                  Private Room (Only players with code can join)
+                </label>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="flex-1 py-2.5 bg-slate-800 text-slate-400 rounded-xl font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 bg-cyan-500 text-slate-950 rounded-xl font-bold"
+                >
+                  Create & Host
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+    </div>
+  );
+};

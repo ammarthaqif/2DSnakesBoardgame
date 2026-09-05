@@ -1,0 +1,8 @@
+{
+  "name": "Remix Snake Board Game",
+  "description": "A mobile snake board game featuring online multiplayer, math challenge dice rolls and snake bites, customizable snake skins, seasonal tournaments, and global leaderboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
