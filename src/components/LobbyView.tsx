@@ -25,7 +25,13 @@ interface LobbyViewProps {
   isMuted: boolean;
   onToggleMute: () => void;
   onQuickMatch: (isTournament?: boolean) => void;
-  onCreateRoom: (roomName: string, timerDuration: 5 | 10, isPrivate: boolean, isTournament: boolean) => void;
+  onCreateRoom: (
+    roomName: string,
+    timerDuration: 5 | 10,
+    isPrivate: boolean,
+    isTournament: boolean,
+    customCode?: string
+  ) => void;
   onJoinRoom: (roomId: string) => void;
   onOpenSkins: () => void;
   onOpenLeaderboard: () => void;
@@ -49,6 +55,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const [roomCodeInput, setRoomCodeInput] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRoomName, setNewRoomName] = useState(`${profile.username}'s Arena`);
+  const [customRoomCode, setCustomRoomCode] = useState('');
   const [newRoomTimer, setNewRoomTimer] = useState<5 | 10>(10);
   const [isPrivateRoom, setIsPrivateRoom] = useState(false);
 
@@ -62,7 +69,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     sounds.playDiceRoll();
-    onCreateRoom(newRoomName, newRoomTimer, isPrivateRoom, false);
+    onCreateRoom(newRoomName, newRoomTimer, isPrivateRoom, false, customRoomCode.trim());
     setShowCreateModal(false);
   };
 
@@ -287,6 +294,22 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                   onChange={(e) => setNewRoomName(e.target.value)}
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-semibold"
                   required
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-300 font-bold">Custom Room Code</label>
+                  <span className="text-[10px] text-slate-400">Optional (or auto-assigned)</span>
+                </div>
+                <input
+                  id="create-custom-code-input"
+                  type="text"
+                  placeholder="e.g. VIP88, SERPENT, 1234"
+                  value={customRoomCode}
+                  onChange={(e) => setCustomRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, ''))}
+                  maxLength={12}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-cyan-400 font-mono font-bold tracking-wider uppercase placeholder:text-slate-600 focus:outline-none focus:border-cyan-400"
                 />
               </div>
 

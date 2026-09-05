@@ -8,8 +8,64 @@ import { SNAKES, LADDERS, INITIAL_LEADERBOARD, CURRENT_TOURNAMENT, RANDOM_BOT_NA
 import { createDiceRollChallenge, createSnakeBiteChallenge, createBonusThrowChallenge } from './src/utils/mathChallenge';
 
 const rooms: Map<string, GameRoom> = new Map();
+// Map playerId -> current socket.id
+const playerSockets: Map<string, string> = new Map();
+// Map socket.id -> { playerId: string; roomId?: string }
+const socketToPlayer: Map<string, { playerId: string; roomId?: string }> = new Map();
+// Map roomId -> authoritative turn/challenge timer
+const roomTimers: Map<string, NodeJS.Timeout> = new Map();
+// Map playerId -> disconnect grace timeout
+const disconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+
 let leaderboard: LeaderboardEntry[] = [...INITIAL_LEADERBOARD];
 let currentTournament: TournamentEvent = { ...CURRENT_TOURNAMENT };
+
+// Robust helper to lookup rooms by custom code, partial code, case-insensitively
+function findRoomByCode(rawCode: string | undefined): GameRoom | undefined {
+  if (!rawCode) return undefined;
+  const clean = rawCode.trim().toUpperCase().replace(/^#/, '');
+  if (!clean) return undefined;
+
+  // 1. Direct map lookup
+  if (rooms.has(clean)) return rooms.get(clean);
+
+  // 2. Lookup with ROOM- prefix if omitted
+  if (!clean.startsWith('ROOM-') && rooms.has(`ROOM-${clean}`)) {
+    return rooms.get(`ROOM-${clean}`);
+  }
+
+  // 3. Lookup without ROOM- prefix if provided
+  if (clean.startsWith('ROOM-')) {
+    const withoutPrefix = clean.replace('ROOM-', '');
+    if (rooms.has(withoutPrefix)) return rooms.get(withoutPrefix);
+  }
+
+  // 4. Case-insensitive scan across all active rooms
+  for (const [key, room] of rooms.entries()) {
+    const upperKey = key.toUpperCase();
+    const upperRoomId = room.id.toUpperCase();
+    if (
+      upperKey === clean ||
+      upperRoomId === clean ||
+      upperKey === `ROOM-${clean}` ||
+      upperRoomId === `ROOM-${clean}` ||
+      clean === `ROOM-${upperKey}` ||
+      clean === `ROOM-${upperRoomId}`
+    ) {
+      return room;
+    }
+  }
+
+  return undefined;
+}
+
+function clearRoomTimer(roomId: string) {
+  const existing = roomTimers.get(roomId);
+  if (existing) {
+    clearTimeout(existing);
+    roomTimers.delete(roomId);
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -98,7 +154,7 @@ async function startServer() {
 
   function addLog(room: GameRoom, text: string, type: ActionLogEntry['type'], player?: GamePlayer) {
     const entry: ActionLogEntry = {
-      id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+      id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: Date.now(),
       playerId: player?.id || 'system',
       playerName: player?.username || 'System',
@@ -109,6 +165,7 @@ async function startServer() {
   }
 
   function advanceTurn(room: GameRoom) {
+    clearRoomTimer(room.id);
     room.activeChallenge = null;
     room.diceValue = null;
     room.extraTurnAwarded = false;
@@ -126,7 +183,44 @@ async function startServer() {
     // If currentPlayer is bot, automate turn
     if (currentPlayer.isBot && room.status === 'in_progress') {
       scheduleBotTurn(room.id);
+    } else if (!currentPlayer.isBot && room.status === 'in_progress') {
+      startTurnRollTimer(room, currentPlayer);
     }
+  }
+
+  function startTurnRollTimer(room: GameRoom, player: GamePlayer) {
+    clearRoomTimer(room.id);
+    if (player.isBot) return;
+
+    const timer = setTimeout(() => {
+      const curR = rooms.get(room.id);
+      if (!curR || curR.status !== 'in_progress' || curR.activeChallenge) return;
+      const curP = curR.players[curR.currentTurnIndex];
+      if (!curP || curP.id !== player.id) return;
+
+      addLog(curR, `⏱️ ${curP.username} timed out rolling. Auto-rolling dice!`, 'info', curP);
+      executeDiceRoll(curR, curP);
+    }, 20000); // 20s turn roll timeout
+
+    roomTimers.set(room.id, timer);
+  }
+
+  function startChallengeTimer(room: GameRoom, player: GamePlayer, timeLimitSec: number) {
+    clearRoomTimer(room.id);
+    if (player.isBot) return;
+
+    const bufferSec = 2; // latency safety buffer
+    const timer = setTimeout(() => {
+      const curR = rooms.get(room.id);
+      if (!curR || !curR.activeChallenge || curR.status === 'game_over') return;
+      const targetP = curR.players.find((p) => p.id === player.id) || curR.players[curR.currentTurnIndex];
+      if (!targetP) return;
+
+      addLog(curR, `⏱️ Time ran out for ${targetP.username}!`, 'math_fail', targetP);
+      processMathAnswer(curR, targetP, -99999);
+    }, (timeLimitSec + bufferSec) * 1000);
+
+    roomTimers.set(room.id, timer);
   }
 
   function scheduleBotTurn(roomId: string) {
@@ -136,12 +230,12 @@ async function startServer() {
       const bot = room.players[room.currentTurnIndex];
       if (!bot || !bot.isBot) return;
 
-      // Bot rolls dice
       executeDiceRoll(room, bot);
     }, 450);
   }
 
   function executeDiceRoll(room: GameRoom, player: GamePlayer) {
+    clearRoomTimer(room.id);
     const rolled = Math.floor(Math.random() * 6) + 1;
     room.diceValue = rolled;
     room.status = 'answering_math';
@@ -164,10 +258,13 @@ async function startServer() {
         const answer = isCorrect ? challenge.correctAnswer : challenge.correctAnswer + 1;
         processMathAnswer(currentR, player, answer);
       }, 450);
+    } else {
+      startChallengeTimer(room, player, challenge.timeLimit || room.timerDuration);
     }
   }
 
   function processMathAnswer(room: GameRoom, player: GamePlayer, answer: number) {
+    clearRoomTimer(room.id);
     const challenge = room.activeChallenge;
     if (!challenge) return;
 
@@ -200,7 +297,6 @@ async function startServer() {
         // Check if landed on Snake Head
         const snake = SNAKES.find((s) => s.head === player.position);
         if (snake) {
-          // Slide back to snake tail!
           player.position = snake.tail;
           addLog(
             room,
@@ -224,6 +320,8 @@ async function startServer() {
               const botAns = botCorrect ? snakeChallenge.correctAnswer : snakeChallenge.correctAnswer + 2;
               processMathAnswer(curR, player, botAns);
             }, 450);
+          } else {
+            startChallengeTimer(room, player, snakeChallenge.timeLimit || room.timerDuration);
           }
           return;
         }
@@ -286,6 +384,8 @@ async function startServer() {
             const botAns = botCorrect ? bonusChallenge.correctAnswer : bonusChallenge.correctAnswer - 1;
             processMathAnswer(curR, player, botAns);
           }, 450);
+        } else {
+          startChallengeTimer(room, player, bonusChallenge.timeLimit || 8);
         }
       } else {
         addLog(
@@ -312,6 +412,8 @@ async function startServer() {
 
         if (player.isBot) {
           scheduleBotTurn(room.id);
+        } else {
+          startTurnRollTimer(room, player);
         }
       } else {
         addLog(
@@ -332,14 +434,36 @@ async function startServer() {
     // Create Room
     socket.on('create_room', (data: {
       roomName: string;
+      customCode?: string;
       isTournament: boolean;
       timerDuration: 5 | 10;
       isPrivate: boolean;
-      player: { username: string; skinId: string };
+      player: { id?: string; username: string; skinId: string };
     }) => {
-      const roomId = `ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
+      let roomId = '';
+
+      // Validate & clean custom code if requested
+      if (data.customCode && data.customCode.trim()) {
+        const cleaned = data.customCode.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 12);
+        if (cleaned.length >= 2) {
+          if (findRoomByCode(cleaned)) {
+            socket.emit('error_message', `Room code "${cleaned}" is already in use. Try a different code.`);
+            return;
+          }
+          roomId = cleaned;
+        }
+      }
+
+      if (!roomId) {
+        roomId = `ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
+      }
+
+      const playerId = data.player?.id || `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      playerSockets.set(playerId, socket.id);
+      socketToPlayer.set(socket.id, { playerId, roomId });
+
       const hostPlayer: GamePlayer = {
-        id: socket.id,
+        id: playerId,
         username: data.player.username || 'SnakeMaster',
         skinId: data.player.skinId || 'emerald_viper',
         position: 1,
@@ -350,11 +474,12 @@ async function startServer() {
         avatarIndex: 0,
         isHost: true,
         isReady: true,
+        connected: true,
       };
 
       const newRoom: GameRoom = {
         id: roomId,
-        name: data.roomName || `${data.player.username}'s Game`,
+        name: data.roomName || `${data.player.username || 'Host'}'s Game`,
         isTournament: data.isTournament || false,
         timerDuration: data.timerDuration || 10,
         maxPlayers: 4,
@@ -370,7 +495,7 @@ async function startServer() {
         extraTurnAwarded: false,
       };
 
-      addLog(newRoom, `${hostPlayer.username} created the room.`, 'info', hostPlayer);
+      addLog(newRoom, `${hostPlayer.username} created custom room [${roomId}].`, 'info', hostPlayer);
       rooms.set(roomId, newRoom);
       socket.join(roomId);
 
@@ -378,15 +503,44 @@ async function startServer() {
       io.emit('lobby_rooms', getPublicRooms());
     });
 
-    // Join Room
-    socket.on('join_room', (data: { roomId: string; player: { username: string; skinId: string } }) => {
-      const room = rooms.get(data.roomId.toUpperCase());
+    // Join Room (by code or clicking lobby)
+    socket.on('join_room', (data: { roomId: string; player: { id?: string; username: string; skinId: string } }) => {
+      const room = findRoomByCode(data.roomId);
       if (!room) {
-        socket.emit('error_message', 'Room not found. Check the room code.');
+        socket.emit('error_message', `Room "${data.roomId}" not found. Check the room code.`);
         return;
       }
+
+      const clientPlayerId = data.player?.id;
+
+      // Check if this player is rejoining their existing slot in the room
+      const existingPlayer = room.players.find(
+        (p) =>
+          (clientPlayerId && p.id === clientPlayerId) ||
+          (p.username.toLowerCase() === (data.player.username || '').toLowerCase() && !p.isBot)
+      );
+
+      if (existingPlayer) {
+        // Clear any disconnect grace timer
+        const discTimer = disconnectTimers.get(existingPlayer.id);
+        if (discTimer) {
+          clearTimeout(discTimer);
+          disconnectTimers.delete(existingPlayer.id);
+        }
+
+        playerSockets.set(existingPlayer.id, socket.id);
+        socketToPlayer.set(socket.id, { playerId: existingPlayer.id, roomId: room.id });
+        existingPlayer.connected = true;
+        socket.join(room.id);
+
+        addLog(room, `${existingPlayer.username} reconnected to the room.`, 'info', existingPlayer);
+        socket.emit('joined_room', { roomId: room.id, room, player: existingPlayer });
+        io.to(room.id).emit('room_update', room);
+        return;
+      }
+
       if (room.players.length >= room.maxPlayers) {
-        socket.emit('error_message', 'Room is full.');
+        socket.emit('error_message', 'Room is currently full.');
         return;
       }
       if (room.status !== 'waiting') {
@@ -394,9 +548,20 @@ async function startServer() {
         return;
       }
 
+      // Avoid identical usernames in the same match
+      let chosenUsername = data.player.username || `Player${room.players.length + 1}`;
+      const duplicateCount = room.players.filter((p) => p.username.startsWith(chosenUsername)).length;
+      if (duplicateCount > 0) {
+        chosenUsername = `${chosenUsername} #${duplicateCount + 1}`;
+      }
+
+      const playerId = clientPlayerId || `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      playerSockets.set(playerId, socket.id);
+      socketToPlayer.set(socket.id, { playerId, roomId: room.id });
+
       const newPlayer: GamePlayer = {
-        id: socket.id,
-        username: data.player.username || `Player${room.players.length + 1}`,
+        id: playerId,
+        username: chosenUsername,
         skinId: data.player.skinId || 'neon_cyber',
         position: 1,
         isBot: false,
@@ -406,6 +571,7 @@ async function startServer() {
         avatarIndex: room.players.length,
         isHost: false,
         isReady: true,
+        connected: true,
       };
 
       room.players.push(newPlayer);
@@ -417,17 +583,50 @@ async function startServer() {
       io.emit('lobby_rooms', getPublicRooms());
     });
 
+    // Rejoin Room (for auto-reconnect on socket disconnect/transport upgrade)
+    socket.on('rejoin_room', (data: { roomId: string; player: { id: string; username: string; skinId: string } }) => {
+      const room = findRoomByCode(data.roomId);
+      if (!room) return;
+
+      const player = room.players.find((p) => p.id === data.player?.id);
+      if (player) {
+        const discTimer = disconnectTimers.get(player.id);
+        if (discTimer) {
+          clearTimeout(discTimer);
+          disconnectTimers.delete(player.id);
+        }
+
+        playerSockets.set(player.id, socket.id);
+        socketToPlayer.set(socket.id, { playerId: player.id, roomId: room.id });
+        player.connected = true;
+        socket.join(room.id);
+
+        socket.emit('joined_room', { roomId: room.id, room, player });
+        io.to(room.id).emit('room_update', room);
+      }
+    });
+
     // Quick Match
-    socket.on('quick_match', (data: { isTournament?: boolean; player: { username: string; skinId: string } }) => {
-      // Find open room or create one
+    socket.on('quick_match', (data: { isTournament?: boolean; player: { id?: string; username: string; skinId: string } }) => {
       let targetRoom = Array.from(rooms.values()).find(
         (r) => !r.isPrivate && r.status === 'waiting' && r.players.length < r.maxPlayers
       );
 
+      const playerId = data.player?.id || `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
       if (targetRoom) {
+        playerSockets.set(playerId, socket.id);
+        socketToPlayer.set(socket.id, { playerId, roomId: targetRoom.id });
+
+        let chosenUsername = data.player.username || 'SpeedSerpent';
+        const duplicateCount = targetRoom.players.filter((p) => p.username.startsWith(chosenUsername)).length;
+        if (duplicateCount > 0) {
+          chosenUsername = `${chosenUsername} #${duplicateCount + 1}`;
+        }
+
         const newPlayer: GamePlayer = {
-          id: socket.id,
-          username: data.player.username || 'SpeedSerpent',
+          id: playerId,
+          username: chosenUsername,
           skinId: data.player.skinId || 'emerald_viper',
           position: 1,
           isBot: false,
@@ -437,6 +636,7 @@ async function startServer() {
           avatarIndex: targetRoom.players.length,
           isHost: false,
           isReady: true,
+          connected: true,
         };
         targetRoom.players.push(newPlayer);
         socket.join(targetRoom.id);
@@ -445,10 +645,12 @@ async function startServer() {
         socket.emit('joined_room', { roomId: targetRoom.id, room: targetRoom, player: newPlayer });
         io.to(targetRoom.id).emit('room_update', targetRoom);
       } else {
-        // Create quick room
         const roomId = `QM-${Math.floor(1000 + Math.random() * 9000)}`;
+        playerSockets.set(playerId, socket.id);
+        socketToPlayer.set(socket.id, { playerId, roomId });
+
         const hostPlayer: GamePlayer = {
-          id: socket.id,
+          id: playerId,
           username: data.player.username || 'SpeedSerpent',
           skinId: data.player.skinId || 'emerald_viper',
           position: 1,
@@ -459,6 +661,7 @@ async function startServer() {
           avatarIndex: 0,
           isHost: true,
           isReady: true,
+          connected: true,
         };
 
         const newRoom: GameRoom = {
@@ -490,7 +693,7 @@ async function startServer() {
 
     // Add Bot Player
     socket.on('add_bot', (data: { roomId: string }) => {
-      const room = rooms.get(data.roomId);
+      const room = findRoomByCode(data.roomId) || rooms.get(data.roomId);
       if (!room || room.status !== 'waiting' || room.players.length >= room.maxPlayers) return;
 
       const randomName = RANDOM_BOT_NAMES[Math.floor(Math.random() * RANDOM_BOT_NAMES.length)];
@@ -508,6 +711,7 @@ async function startServer() {
         consecutiveExtraTurns: 0,
         avatarIndex: room.players.length,
         isReady: true,
+        connected: true,
       };
 
       room.players.push(botPlayer);
@@ -518,7 +722,7 @@ async function startServer() {
 
     // Start Game
     socket.on('start_game', (data: { roomId: string }) => {
-      const room = rooms.get(data.roomId);
+      const room = findRoomByCode(data.roomId) || rooms.get(data.roomId);
       if (!room || room.status !== 'waiting') return;
 
       // If only 1 player, add a bot so game is immediately playable
@@ -535,6 +739,7 @@ async function startServer() {
           consecutiveExtraTurns: 0,
           avatarIndex: 1,
           isReady: true,
+          connected: true,
         };
         room.players.push(botPlayer);
       }
@@ -549,12 +754,14 @@ async function startServer() {
 
       if (firstPlayer.isBot) {
         scheduleBotTurn(room.id);
+      } else {
+        startTurnRollTimer(room, firstPlayer);
       }
     });
 
     // Roll Dice
-    socket.on('roll_dice', (data: { roomId: string }) => {
-      const room = rooms.get(data.roomId);
+    socket.on('roll_dice', (data: { roomId: string; playerId?: string }) => {
+      const room = findRoomByCode(data.roomId) || rooms.get(data.roomId);
       if (!room || room.status !== 'in_progress') return;
 
       socket.join(room.id);
@@ -562,20 +769,25 @@ async function startServer() {
       const currentPlayer = room.players[room.currentTurnIndex];
       if (!currentPlayer) return;
 
-      const isCurrentPlayer =
+      const playerSocketId = playerSockets.get(currentPlayer.id);
+      const isAuthorized =
         currentPlayer.id === socket.id ||
-        (!currentPlayer.isBot && room.players.filter((p) => !p.isBot).length === 1) ||
-        room.players.some((p) => p.id === socket.id && !p.isBot && p.username === currentPlayer.username);
+        playerSocketId === socket.id ||
+        (data.playerId && data.playerId === currentPlayer.id) ||
+        (!currentPlayer.isBot && room.players.filter((p) => !p.isBot).length === 1);
 
-      if (!isCurrentPlayer) return;
+      if (!isAuthorized) return;
 
-      currentPlayer.id = socket.id;
+      // Update mapping just in case socket reconnected
+      playerSockets.set(currentPlayer.id, socket.id);
+      socketToPlayer.set(socket.id, { playerId: currentPlayer.id, roomId: room.id });
+
       executeDiceRoll(room, currentPlayer);
     });
 
     // Submit Math Answer
-    socket.on('submit_math_answer', (data: { roomId: string; answer: number }) => {
-      const room = rooms.get(data.roomId);
+    socket.on('submit_math_answer', (data: { roomId: string; answer: number; playerId?: string }) => {
+      const room = findRoomByCode(data.roomId) || rooms.get(data.roomId);
       if (!room || !room.activeChallenge) return;
 
       socket.join(room.id);
@@ -587,20 +799,22 @@ async function startServer() {
 
       if (!challengePlayer) return;
 
+      const playerSocketId = playerSockets.get(challengePlayer.id);
       const isAuthorized =
         challengePlayer.id === socket.id ||
-        (!challengePlayer.isBot && room.players.filter((p) => !p.isBot).length === 1) ||
-        room.players.some((p) => p.id === socket.id && !p.isBot);
+        playerSocketId === socket.id ||
+        (data.playerId && data.playerId === challengePlayer.id) ||
+        (!challengePlayer.isBot && room.players.filter((p) => !p.isBot).length === 1);
 
       if (!isAuthorized) return;
 
-      challengePlayer.id = socket.id;
+      playerSockets.set(challengePlayer.id, socket.id);
       processMathAnswer(room, challengePlayer, data.answer);
     });
 
     // Timeout event if client timer reaches 0
-    socket.on('math_timeout', (data: { roomId: string }) => {
-      const room = rooms.get(data.roomId);
+    socket.on('math_timeout', (data: { roomId: string; playerId?: string }) => {
+      const room = findRoomByCode(data.roomId) || rooms.get(data.roomId);
       if (!room || !room.activeChallenge) return;
 
       socket.join(room.id);
@@ -611,23 +825,25 @@ async function startServer() {
 
       if (!challengePlayer) return;
 
+      const playerSocketId = playerSockets.get(challengePlayer.id);
       const isAuthorized =
         challengePlayer.id === socket.id ||
-        (!challengePlayer.isBot && room.players.filter((p) => !p.isBot).length === 1) ||
-        room.players.some((p) => p.id === socket.id && !p.isBot);
+        playerSocketId === socket.id ||
+        (data.playerId && data.playerId === challengePlayer.id) ||
+        (!challengePlayer.isBot && room.players.filter((p) => !p.isBot).length === 1);
 
       if (!isAuthorized) return;
 
-      challengePlayer.id = socket.id;
       addLog(room, `⏱️ Time ran out for ${challengePlayer.username}!`, 'math_fail', challengePlayer);
       processMathAnswer(room, challengePlayer, -99999);
     });
 
     // Restart game in same room
     socket.on('restart_game', (data: { roomId: string }) => {
-      const room = rooms.get(data.roomId);
+      const room = findRoomByCode(data.roomId) || rooms.get(data.roomId);
       if (!room) return;
 
+      clearRoomTimer(room.id);
       room.status = 'in_progress';
       room.players.forEach((p) => {
         p.position = 1;
@@ -640,17 +856,27 @@ async function startServer() {
       addLog(room, `Match restarted! All players back to tile 1!`, 'info');
 
       io.to(room.id).emit('room_update', room);
+
+      const firstP = room.players[0];
+      if (firstP?.isBot) {
+        scheduleBotTurn(room.id);
+      } else if (firstP) {
+        startTurnRollTimer(room, firstP);
+      }
     });
 
     // Leave room
-    socket.on('leave_room', (data: { roomId: string }) => {
-      const room = rooms.get(data.roomId);
+    socket.on('leave_room', (data: { roomId: string; playerId?: string }) => {
+      const room = findRoomByCode(data.roomId) || rooms.get(data.roomId);
       if (!room) return;
 
-      room.players = room.players.filter((p) => p.id !== socket.id);
+      const leavingId = data.playerId || socketToPlayer.get(socket.id)?.playerId || socket.id;
+      room.players = room.players.filter((p) => p.id !== leavingId && p.id !== socket.id);
       socket.leave(room.id);
+      socketToPlayer.delete(socket.id);
 
       if (room.players.length === 0) {
+        clearRoomTimer(room.id);
         rooms.delete(room.id);
       } else {
         if (room.currentTurnIndex >= room.players.length) {
@@ -661,24 +887,57 @@ async function startServer() {
       io.emit('lobby_rooms', getPublicRooms());
     });
 
+    // Disconnect handling with grace period
     socket.on('disconnect', () => {
-      rooms.forEach((room, rId) => {
-        const idx = room.players.findIndex((p) => p.id === socket.id);
-        if (idx !== -1) {
-          const removed = room.players[idx];
-          room.players.splice(idx, 1);
-          addLog(room, `${removed.username} disconnected.`, 'info');
+      const playerInfo = socketToPlayer.get(socket.id);
+      socketToPlayer.delete(socket.id);
 
-          if (room.players.length === 0) {
-            rooms.delete(rId);
-          } else {
-            if (room.currentTurnIndex >= room.players.length) {
-              room.currentTurnIndex = 0;
+      rooms.forEach((room, rId) => {
+        const player = room.players.find(
+          (p) => p.id === socket.id || (playerInfo && p.id === playerInfo.playerId)
+        );
+
+        if (player) {
+          player.connected = false;
+          addLog(room, `${player.username} connection lost (reconnecting...).`, 'info');
+          io.to(rId).emit('room_update', room);
+
+          // If room is waiting and has no other human players, clean up quickly
+          const remainingHumans = room.players.filter((p) => !p.isBot && p.connected !== false);
+          const graceTimeoutMs = room.status === 'waiting' && remainingHumans.length === 0 ? 15000 : 45000;
+
+          const timer = setTimeout(() => {
+            disconnectTimers.delete(player.id);
+            const curRoom = rooms.get(rId);
+            if (!curRoom) return;
+
+            // Remove permanently if still disconnected
+            const pIdx = curRoom.players.findIndex((p) => p.id === player.id);
+            if (pIdx !== -1 && curRoom.players[pIdx].connected === false) {
+              const removed = curRoom.players.splice(pIdx, 1)[0];
+              addLog(curRoom, `${removed.username} left the match.`, 'info');
+
+              if (curRoom.players.length === 0 || curRoom.players.every((p) => p.isBot)) {
+                clearRoomTimer(rId);
+                rooms.delete(rId);
+              } else {
+                if (curRoom.currentTurnIndex >= curRoom.players.length) {
+                  curRoom.currentTurnIndex = 0;
+                }
+                io.to(rId).emit('room_update', curRoom);
+                // If it was their turn, advance
+                if (curRoom.status === 'in_progress') {
+                  advanceTurn(curRoom);
+                }
+              }
+              io.emit('lobby_rooms', getPublicRooms());
             }
-            io.to(rId).emit('room_update', room);
-          }
+          }, graceTimeoutMs);
+
+          disconnectTimers.set(player.id, timer);
         }
       });
+
       io.emit('lobby_rooms', getPublicRooms());
     });
   });

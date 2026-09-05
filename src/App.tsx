@@ -60,15 +60,22 @@ export default function App() {
   const [profile, setProfile] = useState<PlayerProfile>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (!parsed.id) {
+          parsed.id = `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        }
+        return parsed;
+      }
     } catch {
       // ignore
     }
+    const randSuffix = Math.floor(100 + Math.random() * 900);
     return {
-      id: `p_${Date.now()}`,
-      username: 'SpeedViper',
+      id: `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      username: `SpeedViper_${randSuffix}`,
       skinId: 'emerald_viper',
-      avatarSeed: 'seed1',
+      avatarSeed: `seed_${randSuffix}`,
       level: 1,
       xp: 40,
       trophies: 150,
@@ -100,6 +107,16 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(INITIAL_LEADERBOARD);
   const [tournament, setTournament] = useState<TournamentEvent>(CURRENT_TOURNAMENT);
   const [statusMessage, setStatusMessage] = useState<string>('');
+
+  const activeRoomRef = useRef<GameRoom | null>(activeRoom);
+  useEffect(() => {
+    activeRoomRef.current = activeRoom;
+  }, [activeRoom]);
+
+  const myPlayerIdRef = useRef<string>(myPlayerId);
+  useEffect(() => {
+    myPlayerIdRef.current = myPlayerId;
+  }, [myPlayerId]);
 
   // Initialize Local Game Engine fallback for GitHub Pages & offline play
   useEffect(() => {
@@ -158,12 +175,24 @@ export default function App() {
   useEffect(() => {
     const socket = io({
       transports: ['websocket', 'polling'],
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
     });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       setSocketConnected(true);
-      setMyPlayerId(socket.id || '');
+      // Re-sync with server room if user was already in a game/waiting room
+      if (activeRoomRef.current) {
+        socket.emit('rejoin_room', {
+          roomId: activeRoomRef.current.id,
+          player: {
+            id: myPlayerIdRef.current || profileRef.current.id,
+            username: profileRef.current.username,
+            skinId: profileRef.current.skinId,
+          },
+        });
+      }
     });
 
     socket.on('disconnect', () => {
@@ -173,6 +202,7 @@ export default function App() {
     socket.on('joined_room', (data: { roomId: string; room: GameRoom; player: GamePlayer }) => {
       setActiveRoom(data.room);
       setMyPlayerId(data.player.id);
+      myPlayerIdRef.current = data.player.id;
       sounds.playDiceRoll();
     });
 
@@ -181,7 +211,9 @@ export default function App() {
 
       // Check if winner
       if (updatedRoom.winner && updatedRoom.status === 'game_over') {
-        const isMeWinner = updatedRoom.winner.id === socket.id;
+        const isMeWinner =
+          updatedRoom.winner.id === myPlayerIdRef.current ||
+          updatedRoom.winner.id === profileRef.current.id;
         const currentProf = profileRef.current;
         // Record on server
         fetch('/api/leaderboard/record', {
@@ -218,13 +250,27 @@ export default function App() {
     socket.on('error_message', (msg: string) => {
       setStatusMessage(msg);
       sounds.playWrong();
-      setTimeout(() => setStatusMessage(''), 3000);
+      setTimeout(() => setStatusMessage(''), 3500);
     });
 
     return () => {
       socket.disconnect();
     };
   }, []);
+
+  // Auto-join from URL parameter (e.g. ?room=ROOM-1234 or ?room=VIP88)
+  useEffect(() => {
+    if (!socketConnected) return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const roomParam = params.get('room');
+      if (roomParam && !activeRoom) {
+        handleJoinRoom(roomParam);
+      }
+    } catch {
+      // ignore
+    }
+  }, [socketConnected]);
 
   // Profile Save
   const handleSaveProfile = (username: string, skinId: string) => {
@@ -241,10 +287,15 @@ export default function App() {
     if (socketConnected && socketRef.current) {
       socketRef.current.emit('quick_match', {
         isTournament,
-        player: { username: profile.username, skinId: profile.skinId },
+        player: {
+          id: profile.id,
+          username: profile.username,
+          skinId: profile.skinId,
+        },
       });
     } else if (localEngineRef.current) {
       setMyPlayerId('local_human');
+      myPlayerIdRef.current = 'local_human';
       const room = localEngineRef.current.quickMatch(
         { username: profile.username, skinId: profile.skinId },
         isTournament
@@ -257,7 +308,8 @@ export default function App() {
     roomName: string,
     timerDuration: 5 | 10,
     isPrivate: boolean,
-    isTournament: boolean
+    isTournament: boolean,
+    customCode?: string
   ) => {
     if (socketConnected && socketRef.current) {
       socketRef.current.emit('create_room', {
@@ -265,10 +317,16 @@ export default function App() {
         timerDuration,
         isPrivate,
         isTournament,
-        player: { username: profile.username, skinId: profile.skinId },
+        customCode: customCode?.trim() || undefined,
+        player: {
+          id: profile.id,
+          username: profile.username,
+          skinId: profile.skinId,
+        },
       });
     } else if (localEngineRef.current) {
       setMyPlayerId('local_human');
+      myPlayerIdRef.current = 'local_human';
       const room = localEngineRef.current.createRoom(
         roomName,
         timerDuration,
@@ -281,13 +339,21 @@ export default function App() {
   };
 
   const handleJoinRoom = (roomId: string) => {
+    const cleanId = roomId.trim().toUpperCase();
+    if (!cleanId) return;
+
     if (socketConnected && socketRef.current) {
       socketRef.current.emit('join_room', {
-        roomId,
-        player: { username: profile.username, skinId: profile.skinId },
+        roomId: cleanId,
+        player: {
+          id: profile.id,
+          username: profile.username,
+          skinId: profile.skinId,
+        },
       });
     } else if (localEngineRef.current) {
       setMyPlayerId('local_human');
+      myPlayerIdRef.current = 'local_human';
       const room = localEngineRef.current.quickMatch(
         { username: profile.username, skinId: profile.skinId }
       );
@@ -313,7 +379,10 @@ export default function App() {
     if (isCurrentRoomLocal) {
       if (localEngineRef.current) localEngineRef.current.startGame();
     } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('start_game', { roomId: activeRoom.id });
+      socketRef.current.emit('start_game', {
+        roomId: activeRoom.id,
+        playerId: myEffectivePlayerId,
+      });
     } else if (localEngineRef.current) {
       localEngineRef.current.startGame();
     }
@@ -323,7 +392,10 @@ export default function App() {
     if (isCurrentRoomLocal) {
       if (localEngineRef.current) localEngineRef.current.addBot();
     } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('add_bot', { roomId: activeRoom.id });
+      socketRef.current.emit('add_bot', {
+        roomId: activeRoom.id,
+        playerId: myEffectivePlayerId,
+      });
     } else if (localEngineRef.current) {
       localEngineRef.current.addBot();
     }
@@ -333,7 +405,10 @@ export default function App() {
     if (isCurrentRoomLocal) {
       if (localEngineRef.current) localEngineRef.current.leaveRoom();
     } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('leave_room', { roomId: activeRoom.id });
+      socketRef.current.emit('leave_room', {
+        roomId: activeRoom.id,
+        playerId: myEffectivePlayerId,
+      });
     } else if (localEngineRef.current) {
       localEngineRef.current.leaveRoom();
     }
@@ -351,14 +426,23 @@ export default function App() {
   const myEffectivePlayerId = useMemo(() => {
     if (!activeRoom) return myPlayerId;
     if (isCurrentRoomLocal) return 'local_human';
+
+    // 1. Direct match by active assigned myPlayerId
     const foundById = activeRoom.players.find((p) => p.id === myPlayerId);
     if (foundById) return foundById.id;
-    const foundHuman = activeRoom.players.find((p) => !p.isBot && p.username === profile.username);
-    if (foundHuman) return foundHuman.id;
-    const firstHuman = activeRoom.players.find((p) => !p.isBot);
-    if (firstHuman) return firstHuman.id;
+
+    // 2. Match by persistent profile id
+    const foundByProfId = activeRoom.players.find((p) => p.id === profile.id);
+    if (foundByProfId) return foundByProfId.id;
+
+    // 3. Match by unique username among players
+    const matchingHumans = activeRoom.players.filter(
+      (p) => !p.isBot && p.username === profile.username
+    );
+    if (matchingHumans.length === 1) return matchingHumans[0].id;
+
     return myPlayerId;
-  }, [activeRoom, isCurrentRoomLocal, profile.username, myPlayerId]);
+  }, [activeRoom, isCurrentRoomLocal, profile.id, profile.username, myPlayerId]);
 
   const currentPlayerInTurn = activeRoom?.players[activeRoom?.currentTurnIndex || 0];
   const isMyTurn = Boolean(currentPlayerInTurn && currentPlayerInTurn.id === myEffectivePlayerId);
@@ -377,7 +461,10 @@ export default function App() {
         localEngineRef.current.rollDice();
       }
     } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('roll_dice', { roomId: activeRoom.id });
+      socketRef.current.emit('roll_dice', {
+        roomId: activeRoom.id,
+        playerId: myEffectivePlayerId,
+      });
     } else if (localEngineRef.current) {
       localEngineRef.current.rollDice();
     }
@@ -436,7 +523,11 @@ export default function App() {
         localEngineRef.current.submitMathAnswer(answer);
       }
     } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('submit_math_answer', { roomId: activeRoom.id, answer });
+      socketRef.current.emit('submit_math_answer', {
+        roomId: activeRoom.id,
+        answer,
+        playerId: currentMyId,
+      });
     } else if (localEngineRef.current) {
       localEngineRef.current.submitMathAnswer(answer);
     }
@@ -444,9 +535,10 @@ export default function App() {
 
   const handleMathTimeout = () => {
     sounds.playWrong();
+    const currentMyId = myEffectivePlayerId;
     setActiveRoom((prev) => {
       if (!prev) return null;
-      if (prev.activeChallenge && prev.activeChallenge.forPlayerId === myEffectivePlayerId) {
+      if (prev.activeChallenge && prev.activeChallenge.forPlayerId === currentMyId) {
         return { ...prev, activeChallenge: null };
       }
       return prev;
@@ -457,7 +549,10 @@ export default function App() {
         localEngineRef.current.handleTimeout();
       }
     } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('math_timeout', { roomId: activeRoom.id });
+      socketRef.current.emit('math_timeout', {
+        roomId: activeRoom.id,
+        playerId: currentMyId,
+      });
     } else if (localEngineRef.current) {
       localEngineRef.current.handleTimeout();
     }
@@ -553,7 +648,7 @@ export default function App() {
         {activeRoom && activeRoom.status === 'waiting' && (
           <WaitingRoomView
             room={activeRoom}
-            currentPlayerId={myPlayerId}
+            currentPlayerId={myEffectivePlayerId}
             onStartGame={handleStartGame}
             onAddBot={handleAddBot}
             onLeaveRoom={handleLeaveRoom}

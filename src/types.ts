@@ -79,6 +79,7 @@ export interface GamePlayer {
   avatarIndex: number;
   isHost?: boolean;
   isReady?: boolean;
+  connected?: boolean;
 }
 
 export type GameStatus = 'waiting' | 'in_progress' | 'rolling' | 'answering_math' | 'moving' | 'answering_snake' | 'answering_bonus' | 'game_over';

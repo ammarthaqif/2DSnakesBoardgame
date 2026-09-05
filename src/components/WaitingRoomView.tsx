@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Copy, Check, Users, Bot, Play, LogOut, Clock, Swords } from 'lucide-react';
+import { Copy, Check, Users, Bot, Play, LogOut, Clock, Swords, Share2, Wifi } from 'lucide-react';
 import { GameRoom, GamePlayer } from '../types';
 import { SnakeSkinAvatar } from './SnakeSkinAvatar';
 import { sounds } from '../utils/soundEffects';
@@ -20,15 +20,26 @@ export const WaitingRoomView: React.FC<WaitingRoomViewProps> = ({
   onAddBot,
   onLeaveRoom,
 }) => {
-  const [copied, setCopied] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
-  const isHost = room.players[0]?.id === currentPlayerId;
+  const isHost =
+    room.players.find((p) => p.id === currentPlayerId)?.isHost ??
+    (room.players[0]?.id === currentPlayerId);
 
   const handleCopyCode = () => {
     navigator.clipboard.writeText(room.id);
-    setCopied(true);
+    setCopiedCode(true);
     sounds.playDiceRoll();
-    setTimeout(() => setCopied(false), 1500);
+    setTimeout(() => setCopiedCode(false), 1500);
+  };
+
+  const handleCopyInviteLink = () => {
+    const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(room.id)}`;
+    navigator.clipboard.writeText(inviteUrl);
+    setCopiedLink(true);
+    sounds.playDiceRoll();
+    setTimeout(() => setCopiedLink(false), 1500);
   };
 
   return (
@@ -62,24 +73,42 @@ export const WaitingRoomView: React.FC<WaitingRoomViewProps> = ({
         </button>
       </div>
 
-      {/* Room Code Card */}
-      <div className="p-3.5 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between">
-        <div>
-          <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-            Room Code (Share to Play Together)
+      {/* Room Code & Invite Link Card */}
+      <div className="p-3.5 bg-slate-950 rounded-2xl border border-slate-800 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+              Room Code (Share with Friends)
+            </div>
+            <div className="text-xl font-black font-mono tracking-widest text-cyan-400 mt-0.5 select-all">
+              {room.id}
+            </div>
           </div>
-          <div className="text-lg font-black font-mono tracking-widest text-cyan-400 mt-0.5">
-            {room.id}
+          <div className="flex items-center gap-1.5">
+            <button
+              id="copy-room-code-btn"
+              onClick={handleCopyCode}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors"
+              title="Copy room code"
+            >
+              {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedCode ? 'Copied' : 'Copy Code'}</span>
+            </button>
+            <button
+              id="copy-invite-link-btn"
+              onClick={handleCopyInviteLink}
+              className="px-3 py-2 bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-800/60 text-cyan-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors"
+              title="Copy direct invite link"
+            >
+              {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Share2 className="w-3.5 h-3.5" />}
+              <span>{copiedLink ? 'Link Copied' : 'Share Link'}</span>
+            </button>
           </div>
         </div>
-        <button
-          id="copy-room-code-btn"
-          onClick={handleCopyCode}
-          className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors"
-        >
-          {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-          <span>{copied ? 'Copied!' : 'Copy'}</span>
-        </button>
+        <div className="text-[10px] text-slate-500 flex items-center gap-1">
+          <Wifi className="w-3 h-3 text-emerald-400" />
+          <span>Real-time multiplayer active. Players can join via code or link.</span>
+        </div>
       </div>
 
       {/* Players List */}
@@ -118,7 +147,20 @@ export const WaitingRoomView: React.FC<WaitingRoomViewProps> = ({
                       </span>
                     )}
                   </div>
-                  <span className="text-[10px] text-emerald-400 font-semibold">Ready to slither</span>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span
+                      className={`inline-block w-1.5 h-1.5 rounded-full ${
+                        p.connected !== false ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                      }`}
+                    />
+                    <span
+                      className={`text-[10px] font-semibold ${
+                        p.connected !== false ? 'text-emerald-400' : 'text-amber-400'
+                      }`}
+                    >
+                      {p.connected !== false ? 'Online' : 'Reconnecting...'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -127,7 +169,7 @@ export const WaitingRoomView: React.FC<WaitingRoomViewProps> = ({
           {/* Empty slot placeholder */}
           {room.players.length < room.maxPlayers && (
             <div className="p-3 rounded-2xl border border-dashed border-slate-800 text-center text-xs text-slate-500">
-              Waiting for players to join...
+              Waiting for friends or AI to join ({room.maxPlayers - room.players.length} open slots)...
             </div>
           )}
         </div>
