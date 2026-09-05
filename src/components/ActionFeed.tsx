@@ -41,9 +41,9 @@ export const ActionFeed: React.FC<ActionFeedProps> = ({ logs }) => {
             Match is commencing... Roll the dice to begin!
           </div>
         ) : (
-          logs.slice(0, 8).map((log) => (
+          logs.slice(0, 8).map((log, idx) => (
             <div
-              key={log.id}
+              key={`${log.id || 'log'}_${idx}`}
               className="flex items-start gap-1.5 text-[11px] leading-tight text-slate-300 bg-slate-950/40 p-1.5 rounded-lg border border-slate-800/40"
             >
               {getLogIcon(log.type)}

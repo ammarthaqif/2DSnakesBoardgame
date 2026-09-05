@@ -1,3 +1,5 @@
+export type MathDifficulty = 'easy' | 'medium' | 'hard';
+
 export interface PlayerProfile {
   id: string;
   username: string;
@@ -11,6 +13,7 @@ export interface PlayerProfile {
   mathCorrect: number;
   mathTotal: number;
   seasonPoints: number;
+  mathDifficulty?: MathDifficulty;
 }
 
 export interface SnakeSkin {
@@ -57,7 +60,7 @@ export interface MathChallenge {
   operator: '+' | '-' | '×';
   correctAnswer: number;
   options: number[];
-  timeLimit: number; // in seconds (e.g. 5 or 10)
+  timeLimit: number; // in seconds (e.g. 5, 10, 15)
   startedAt: number; // timestamp
   forPlayerId: string;
   targetTileIfCorrect: number;
@@ -65,6 +68,7 @@ export interface MathChallenge {
   rolledValue?: number;
   snakeHead?: number;
   snakeTail?: number;
+  difficulty?: MathDifficulty;
 }
 
 export interface GamePlayer {
@@ -80,6 +84,8 @@ export interface GamePlayer {
   isHost?: boolean;
   isReady?: boolean;
   connected?: boolean;
+  mathDifficulty?: MathDifficulty;
+  turnsWithoutMoving?: number;
 }
 
 export type GameStatus = 'waiting' | 'in_progress' | 'rolling' | 'answering_math' | 'moving' | 'answering_snake' | 'answering_bonus' | 'game_over';
@@ -88,7 +94,7 @@ export interface GameRoom {
   id: string;
   name: string;
   isTournament: boolean;
-  timerDuration: 5 | 10;
+  timerDuration: 5 | 10 | 15;
   maxPlayers: number;
   status: GameStatus;
   players: GamePlayer[];
@@ -100,6 +106,15 @@ export interface GameRoom {
   createdAt: number;
   isPrivate: boolean;
   extraTurnAwarded: boolean;
+}
+
+export interface MilestoneToast {
+  id: string;
+  title: string;
+  message: string;
+  icon?: 'trophy' | 'flame' | 'ladder' | 'star' | 'zap' | 'shield';
+  type?: 'success' | 'warning' | 'info' | 'streak';
+  timestamp: number;
 }
 
 export interface ActionLogEntry {

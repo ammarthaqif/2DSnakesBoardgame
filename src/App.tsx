@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import {
   PlayerProfile,
@@ -11,6 +11,8 @@ import {
   GamePlayer,
   LeaderboardEntry,
   TournamentEvent,
+  MathDifficulty,
+  MilestoneToast,
 } from './types';
 import {
   CURRENT_TOURNAMENT,
@@ -32,6 +34,8 @@ import { PlayerRegistrationModal } from './components/PlayerRegistrationModal';
 import { ActionFeed } from './components/ActionFeed';
 import { SnakeSkinAvatar } from './components/SnakeSkinAvatar';
 import { TurnCountdownTimer } from './components/TurnCountdownTimer';
+import { InGamePlayersBar } from './components/InGamePlayersBar';
+import { MilestoneToastContainer } from './components/MilestoneToastContainer';
 import { LocalGameEngine } from './utils/localGameEngine';
 import { motion } from 'motion/react';
 import {
@@ -49,6 +53,20 @@ import {
 } from 'lucide-react';
 
 const LOCAL_STORAGE_KEY = 'snake_boardgame_profile_v1';
+
+// Distinct tab session player ID so multiple tabs in the same browser can test multiplayer side-by-side
+const getTabPlayerId = () => {
+  try {
+    let tabId = sessionStorage.getItem('snake_tab_player_id');
+    if (!tabId) {
+      tabId = `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      sessionStorage.setItem('snake_tab_player_id', tabId);
+    }
+    return tabId;
+  } catch {
+    return `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  }
+};
 
 export default function App() {
   // Socket connection
@@ -100,6 +118,22 @@ export default function App() {
   const [showLeaderboardModal, setShowLeaderboardModal] = useState<boolean>(false);
   const [showTournamentModal, setShowTournamentModal] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+
+  // Milestone Toast Notifications
+  const [toasts, setToasts] = useState<MilestoneToast[]>([]);
+
+  const addMilestoneToast = useCallback((toastData: Omit<MilestoneToast, 'id' | 'timestamp'>) => {
+    const newToast: MilestoneToast = {
+      ...toastData,
+      id: `toast_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      timestamp: Date.now(),
+    };
+    sounds.playTrophy();
+    setToasts((prev) => [newToast, ...prev.slice(0, 2)]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== newToast.id));
+    }, 4500);
+  }, []);
 
   // Active Game State
   const [activeRoom, setActiveRoom] = useState<GameRoom | null>(null);
@@ -253,6 +287,10 @@ export default function App() {
       setTimeout(() => setStatusMessage(''), 3500);
     });
 
+    socket.on('milestone_unlocked', (toastData: any) => {
+      addMilestoneToast(toastData);
+    });
+
     return () => {
       socket.disconnect();
     };
@@ -272,32 +310,76 @@ export default function App() {
     }
   }, [socketConnected]);
 
+  // Milestone detection for both online multiplayer and local offline play
+  const triggeredMilestonesRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!activeRoom) {
+      triggeredMilestonesRef.current.clear();
+      return;
+    }
+    if (activeRoom.status === 'waiting') {
+      triggeredMilestonesRef.current.clear();
+      return;
+    }
+
+    // Milestone 1: First to reach Tile 50
+    if (!triggeredMilestonesRef.current.has('first_50')) {
+      const p50 = activeRoom.players.find((p) => p.position >= 50);
+      if (p50) {
+        triggeredMilestonesRef.current.add('first_50');
+        addMilestoneToast({
+          title: 'First to reach Tile 50!',
+          message: `${p50.username} reached the halfway point on the board!`,
+          icon: 'trophy',
+          type: 'success',
+        });
+      }
+    }
+
+    // Milestone 2: 3-Match Math Streak
+    activeRoom.players.forEach((p) => {
+      const streakKey = `streak_3_${p.id}`;
+      if (p.mathStreak >= 3 && !triggeredMilestonesRef.current.has(streakKey)) {
+        triggeredMilestonesRef.current.add(streakKey);
+        addMilestoneToast({
+          title: '3-Match Math Streak!',
+          message: `${p.username} answered 3 math challenges correctly in a row!`,
+          icon: 'flame',
+          type: 'streak',
+        });
+      }
+    });
+  }, [activeRoom, addMilestoneToast]);
+
   // Profile Save
-  const handleSaveProfile = (username: string, skinId: string) => {
+  const handleSaveProfile = (username: string, skinId: string, difficulty: MathDifficulty = 'medium') => {
     setProfile((prev) => ({
       ...prev,
       username,
       skinId,
+      mathDifficulty: difficulty,
     }));
     setShowRegistration(false);
   };
 
   // Matchmaking / Room actions
   const handleQuickMatch = (isTournament: boolean = false) => {
+    const tabPlayerId = getTabPlayerId();
     if (socketConnected && socketRef.current) {
       socketRef.current.emit('quick_match', {
         isTournament,
         player: {
-          id: profile.id,
+          id: tabPlayerId,
           username: profile.username,
           skinId: profile.skinId,
+          mathDifficulty: profile.mathDifficulty || 'medium',
         },
       });
     } else if (localEngineRef.current) {
       setMyPlayerId('local_human');
       myPlayerIdRef.current = 'local_human';
       const room = localEngineRef.current.quickMatch(
-        { username: profile.username, skinId: profile.skinId },
+        { username: profile.username, skinId: profile.skinId, mathDifficulty: profile.mathDifficulty || 'medium' },
         isTournament
       );
       setActiveRoom(room);
@@ -306,11 +388,13 @@ export default function App() {
 
   const handleCreateRoom = (
     roomName: string,
-    timerDuration: 5 | 10,
+    timerDuration: 5 | 10 | 15,
     isPrivate: boolean,
     isTournament: boolean,
-    customCode?: string
+    customCode?: string,
+    maxPlayers: number = 4
   ) => {
+    const tabPlayerId = getTabPlayerId();
     if (socketConnected && socketRef.current) {
       socketRef.current.emit('create_room', {
         roomName,
@@ -318,10 +402,12 @@ export default function App() {
         isPrivate,
         isTournament,
         customCode: customCode?.trim() || undefined,
+        maxPlayers,
         player: {
-          id: profile.id,
+          id: tabPlayerId,
           username: profile.username,
           skinId: profile.skinId,
+          mathDifficulty: profile.mathDifficulty || 'medium',
         },
       });
     } else if (localEngineRef.current) {
@@ -332,7 +418,8 @@ export default function App() {
         timerDuration,
         isPrivate,
         isTournament,
-        { username: profile.username, skinId: profile.skinId }
+        { username: profile.username, skinId: profile.skinId, mathDifficulty: profile.mathDifficulty || 'medium' },
+        maxPlayers
       );
       setActiveRoom(room);
     }
@@ -342,20 +429,22 @@ export default function App() {
     const cleanId = roomId.trim().toUpperCase();
     if (!cleanId) return;
 
+    const tabPlayerId = getTabPlayerId();
     if (socketConnected && socketRef.current) {
       socketRef.current.emit('join_room', {
         roomId: cleanId,
         player: {
-          id: profile.id,
+          id: tabPlayerId,
           username: profile.username,
           skinId: profile.skinId,
+          mathDifficulty: profile.mathDifficulty || 'medium',
         },
       });
     } else if (localEngineRef.current) {
       setMyPlayerId('local_human');
       myPlayerIdRef.current = 'local_human';
       const room = localEngineRef.current.quickMatch(
-        { username: profile.username, skinId: profile.skinId }
+        { username: profile.username, skinId: profile.skinId, mathDifficulty: profile.mathDifficulty || 'medium' }
       );
       setActiveRoom(room);
     }
@@ -431,7 +520,12 @@ export default function App() {
     const foundById = activeRoom.players.find((p) => p.id === myPlayerId);
     if (foundById) return foundById.id;
 
-    // 2. Match by persistent profile id
+    // 2. Match by tab session player ID
+    const tabPlayerId = getTabPlayerId();
+    const foundByTabId = activeRoom.players.find((p) => p.id === tabPlayerId);
+    if (foundByTabId) return foundByTabId.id;
+
+    // 3. Match by persistent profile id
     const foundByProfId = activeRoom.players.find((p) => p.id === profile.id);
     if (foundByProfId) return foundByProfId.id;
 
@@ -738,6 +832,12 @@ export default function App() {
               </motion.div>
             )}
 
+            {/* 4-Player Active Match Status & Turn Strip */}
+            <InGamePlayersBar
+              room={activeRoom}
+              currentPlayerId={myEffectivePlayerId}
+            />
+
             {/* The 10x10 Snake Board */}
             <GameBoard
               players={activeRoom.players}
@@ -779,6 +879,7 @@ export default function App() {
           winner={activeRoom.winner}
           isCurrentUserWinner={activeRoom.winner.id === myEffectivePlayerId}
           isTournament={activeRoom.isTournament}
+          players={activeRoom.players}
           onPlayAgain={handlePlayAgain}
           onLeaveRoom={handleLeaveRoom}
         />
@@ -819,9 +920,16 @@ export default function App() {
       <PlayerRegistrationModal
         initialUsername={profile.username}
         initialSkinId={profile.skinId}
+        initialDifficulty={profile.mathDifficulty || 'medium'}
         isOpen={showRegistration}
         onSave={handleSaveProfile}
         onClose={() => setShowRegistration(false)}
+      />
+
+      {/* Milestone Toast Notifications */}
+      <MilestoneToastContainer
+        toasts={toasts}
+        onDismiss={(id) => setToasts((prev) => prev.filter((t) => t.id !== id))}
       />
     </div>
   );

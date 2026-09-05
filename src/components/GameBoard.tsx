@@ -225,16 +225,23 @@ export const GameBoard: React.FC<GameBoardProps> = ({
 
               {/* Tile Footprint Dots for resident pawns */}
               <div className="h-2 flex items-center justify-center gap-0.5 pointer-events-none">
-                {tilePlayers.map((p) => (
-                  <div
-                    key={`footprint-${p.id}`}
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      p.id === currentPlayerId
-                        ? 'bg-cyan-400 ring-1 ring-cyan-300 shadow-sm shadow-cyan-400'
-                        : 'bg-amber-400 ring-1 ring-amber-300 shadow-sm shadow-amber-400'
-                    }`}
-                  />
-                ))}
+                {tilePlayers.map((p) => {
+                  const pIndex = players.findIndex((pl) => pl.id === p.id);
+                  const dotColors = [
+                    'bg-cyan-400 ring-cyan-300 shadow-cyan-400',
+                    'bg-amber-400 ring-amber-300 shadow-amber-400',
+                    'bg-emerald-400 ring-emerald-300 shadow-emerald-400',
+                    'bg-purple-400 ring-purple-300 shadow-purple-400',
+                  ];
+                  const dotClass = dotColors[(pIndex >= 0 ? pIndex : 0) % dotColors.length];
+                  return (
+                    <div
+                      key={`footprint-${p.id}`}
+                      className={`w-1.5 h-1.5 rounded-full ring-1 shadow-sm ${dotClass}`}
+                      title={`${p.username}`}
+                    />
+                  );
+                })}
               </div>
             </div>
           );
@@ -341,45 +348,56 @@ export const GameBoard: React.FC<GameBoardProps> = ({
                 </AnimatePresence>
 
                 {/* Avatar with Glow Rings */}
-                <div
-                  className={`relative rounded-full transition-shadow ${
-                    isLadder
-                      ? 'shadow-[0_0_25px_rgba(251,191,36,0.9)] ring-2 ring-amber-400'
-                      : isSnake
-                      ? 'shadow-[0_0_25px_rgba(244,63,94,0.9)] ring-2 ring-rose-500 animate-pulse'
-                      : isTurn
-                      ? 'shadow-[0_0_15px_rgba(251,191,36,0.6)] ring-2 ring-amber-400'
-                      : isMe
-                      ? 'ring-1.5 ring-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.4)]'
-                      : 'ring-1 ring-slate-600'
-                  }`}
-                >
-                  <SnakeSkinAvatar skinId={p.skinId} size="sm" />
+                {(() => {
+                  const pIndex = players.findIndex((pl) => pl.id === p.id);
+                  const playerColors = [
+                    { ring: 'ring-cyan-400', shadow: 'shadow-[0_0_12px_rgba(6,182,212,0.5)]', label: 'bg-cyan-950/90 text-cyan-300 border-cyan-800' },
+                    { ring: 'ring-amber-400', shadow: 'shadow-[0_0_12px_rgba(245,158,11,0.5)]', label: 'bg-amber-950/90 text-amber-300 border-amber-800' },
+                    { ring: 'ring-emerald-400', shadow: 'shadow-[0_0_12px_rgba(16,185,129,0.5)]', label: 'bg-emerald-950/90 text-emerald-300 border-emerald-800' },
+                    { ring: 'ring-purple-400', shadow: 'shadow-[0_0_12px_rgba(168,85,247,0.5)]', label: 'bg-purple-950/90 text-purple-300 border-purple-800' },
+                  ];
+                  const pStyle = playerColors[(pIndex >= 0 ? pIndex : 0) % playerColors.length];
 
-                  {/* Active Turn Dice Floating Badge */}
-                  {isTurn && (
-                    <motion.div
-                      animate={{ y: [0, -3, 0] }}
-                      transition={{ repeat: Infinity, duration: 1 }}
-                      className="absolute -top-1.5 -right-1.5 text-[8px] bg-amber-400 text-slate-950 font-black rounded-full w-3.5 h-3.5 flex items-center justify-center border border-amber-200 shadow-md"
-                    >
-                      🎲
-                    </motion.div>
-                  )}
-                </div>
+                  return (
+                    <>
+                      <div
+                        className={`relative rounded-full transition-shadow ${
+                          isLadder
+                            ? 'shadow-[0_0_25px_rgba(251,191,36,0.9)] ring-2 ring-amber-400'
+                            : isSnake
+                            ? 'shadow-[0_0_25px_rgba(244,63,94,0.9)] ring-2 ring-rose-500 animate-pulse'
+                            : isTurn
+                            ? 'shadow-[0_0_18px_rgba(251,191,36,0.8)] ring-2 ring-amber-400 animate-pulse'
+                            : `ring-1.5 ${pStyle.ring} ${pStyle.shadow}`
+                        }`}
+                      >
+                        <SnakeSkinAvatar skinId={p.skinId} size="sm" />
 
-                {/* Player Mini Name Label */}
-                <span
-                  className={`mt-0.5 px-1 py-0.2 rounded text-[7px] font-bold font-mono tracking-tight shadow truncate max-w-[48px] ${
-                    isTurn
-                      ? 'bg-amber-500 text-slate-950 font-black'
-                      : isMe
-                      ? 'bg-cyan-950/90 text-cyan-300 border border-cyan-800'
-                      : 'bg-slate-900/90 text-slate-300 border border-slate-800'
-                  }`}
-                >
-                  {isMe ? 'You' : p.username}
-                </span>
+                        {/* Active Turn Dice Floating Badge */}
+                        {isTurn && (
+                          <motion.div
+                            animate={{ y: [0, -3, 0] }}
+                            transition={{ repeat: Infinity, duration: 1 }}
+                            className="absolute -top-1.5 -right-1.5 text-[8px] bg-amber-400 text-slate-950 font-black rounded-full w-3.5 h-3.5 flex items-center justify-center border border-amber-200 shadow-md"
+                          >
+                            🎲
+                          </motion.div>
+                        )}
+                      </div>
+
+                      {/* Player Mini Name Label */}
+                      <span
+                        className={`mt-0.5 px-1 py-0.2 rounded text-[7px] font-bold font-mono tracking-tight shadow truncate max-w-[50px] border ${
+                          isTurn
+                            ? 'bg-amber-400 text-slate-950 font-black border-amber-300'
+                            : pStyle.label
+                        }`}
+                      >
+                        {isMe ? 'You' : p.username}
+                      </span>
+                    </>
+                  );
+                })()}
               </motion.div>
             );
           })}

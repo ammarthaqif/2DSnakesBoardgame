@@ -121,62 +121,124 @@ export const WaitingRoomView: React.FC<WaitingRoomViewProps> = ({
         </div>
 
         <div className="space-y-2">
-          {room.players.map((p, idx) => (
-            <div
-              key={p.id}
-              className="flex items-center justify-between p-2.5 rounded-2xl bg-slate-950/60 border border-slate-800"
-            >
-              <div className="flex items-center gap-2.5">
-                <SnakeSkinAvatar skinId={p.skinId} size="md" showCrown={idx === 0} />
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-bold text-slate-100">{p.username}</span>
-                    {idx === 0 && (
-                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
-                        Host
-                      </span>
-                    )}
-                    {p.isBot && (
-                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold">
-                        AI Bot
-                      </span>
-                    )}
-                    {p.id === currentPlayerId && (
-                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold">
-                        You
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <span
-                      className={`inline-block w-1.5 h-1.5 rounded-full ${
-                        p.connected !== false ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
-                      }`}
-                    />
-                    <span
-                      className={`text-[10px] font-semibold ${
-                        p.connected !== false ? 'text-emerald-400' : 'text-amber-400'
-                      }`}
-                    >
-                      {p.connected !== false ? 'Online' : 'Reconnecting...'}
+          {room.players.map((p, idx) => {
+            const playerColors = [
+              { border: 'border-cyan-500/50', badge: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40', dot: 'bg-cyan-400' },
+              { border: 'border-amber-500/50', badge: 'bg-amber-500/20 text-amber-300 border-amber-500/40', dot: 'bg-amber-400' },
+              { border: 'border-emerald-500/50', badge: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40', dot: 'bg-emerald-400' },
+              { border: 'border-purple-500/50', badge: 'bg-purple-500/20 text-purple-300 border-purple-500/40', dot: 'bg-purple-400' },
+            ];
+            const color = playerColors[idx % playerColors.length];
+
+            return (
+              <div
+                key={p.id}
+                className={`flex items-center justify-between p-2.5 rounded-2xl bg-slate-950/70 border ${color.border} transition-all`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="relative">
+                    <SnakeSkinAvatar skinId={p.skinId} size="md" showCrown={idx === 0} />
+                    <span className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full ${color.badge} text-[9px] font-black flex items-center justify-center border shadow-sm`}>
+                      {idx + 1}
                     </span>
                   </div>
+                  <div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-xs font-bold text-slate-100">{p.username}</span>
+                      {idx === 0 && (
+                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
+                          Host
+                        </span>
+                      )}
+                      {p.isBot && (
+                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold">
+                          AI Bot
+                        </span>
+                      )}
+                      {p.id === currentPlayerId && (
+                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold">
+                          You
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span
+                        className={`inline-block w-1.5 h-1.5 rounded-full ${
+                          p.connected !== false ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                        }`}
+                      />
+                      <span
+                        className={`text-[10px] font-semibold ${
+                          p.connected !== false ? 'text-emerald-400' : 'text-amber-400'
+                        }`}
+                      >
+                        {p.connected !== false ? 'Connected' : 'Reconnecting...'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="text-right">
+                  <span className="text-[10px] font-mono text-slate-400 block">P{idx + 1}</span>
+                  <span className="text-[9px] text-slate-500">Tile 1</span>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
-          {/* Empty slot placeholder */}
-          {room.players.length < room.maxPlayers && (
-            <div className="p-3 rounded-2xl border border-dashed border-slate-800 text-center text-xs text-slate-500">
-              Waiting for friends or AI to join ({room.maxPlayers - room.players.length} open slots)...
-            </div>
-          )}
+          {/* Render each unfilled slot up to maxPlayers (up to 4) */}
+          {Array.from({ length: Math.max(0, room.maxPlayers - room.players.length) }).map((_, slotIdx) => {
+            const actualSlotNumber = room.players.length + slotIdx + 1;
+            return (
+              <div
+                key={`empty-slot-${actualSlotNumber}`}
+                className="flex items-center justify-between p-2.5 rounded-2xl border border-dashed border-slate-800 bg-slate-950/30 text-xs text-slate-500"
+              >
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full border border-dashed border-slate-700 bg-slate-900/60 flex items-center justify-center text-[10px] font-bold text-slate-500">
+                    {actualSlotNumber}
+                  </div>
+                  <div>
+                    <span className="text-slate-400 font-semibold text-xs">Slot {actualSlotNumber}: Open</span>
+                    <p className="text-[10px] text-slate-600">Waiting for friend code or bot</p>
+                  </div>
+                </div>
+
+                {isHost && (
+                  <button
+                    type="button"
+                    onClick={onAddBot}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-purple-300 border border-purple-800/30 text-[10px] font-bold flex items-center gap-1 transition-colors"
+                  >
+                    <Bot className="w-3 h-3" />
+                    <span>+ Add AI</span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
+      {room.players.length === room.maxPlayers && (
+        <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-center text-xs text-emerald-300 font-bold">
+          🎉 Match Room Full! All {room.maxPlayers} player slots filled and ready to race!
+        </div>
+      )}
+
       {/* Host Controls */}
       <div className="pt-2 space-y-2">
+        {room.players.length >= 2 && (
+          <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-center text-xs text-emerald-300 font-bold flex items-center justify-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>
+              {room.players.filter((p) => !p.isBot).length >= 2
+                ? `Online multiplayers joined (${room.players.length}/${room.maxPlayers})! Ready to race!`
+                : `Players ready (${room.players.length}/${room.maxPlayers})!`}
+            </span>
+          </div>
+        )}
+
         {isHost && room.players.length < room.maxPlayers && (
           <button
             id="add-ai-bot-btn"
@@ -184,22 +246,58 @@ export const WaitingRoomView: React.FC<WaitingRoomViewProps> = ({
             className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-purple-300 border border-purple-800/40 font-bold text-xs flex items-center justify-center gap-2 transition-colors"
           >
             <Bot className="w-4 h-4" />
-            <span>Add AI Challenger</span>
+            <span>Add Optional AI Challenger ({room.players.length}/{room.maxPlayers})</span>
           </button>
         )}
 
         {isHost ? (
-          <button
-            id="start-match-action-btn"
-            onClick={() => {
-              sounds.playDiceRoll();
-              onStartGame();
-            }}
-            className="w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-black text-sm tracking-wide shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 active:scale-98 transition-all"
-          >
-            <Play className="w-4 h-4 fill-slate-950" />
-            <span>{room.players.length === 1 ? 'START (WITH AI BOT)' : 'START GAME NOW'}</span>
-          </button>
+          room.players.length >= 2 ? (
+            <div className="space-y-1.5">
+              <button
+                id="start-match-action-btn"
+                onClick={() => {
+                  sounds.playDiceRoll();
+                  onStartGame();
+                }}
+                className="w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 via-teal-400 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-black text-sm tracking-wide shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 active:scale-98 transition-all"
+              >
+                <Play className="w-4 h-4 fill-slate-950" />
+                <span>
+                  {room.players.filter((p) => !p.isBot).length >= 2
+                    ? `START MULTIPLAYER MATCH (${room.players.length} PLAYERS)`
+                    : `START MATCH (${room.players.length} PLAYERS)`}
+                </span>
+              </button>
+              <div className="text-center text-[10px] text-slate-400 font-semibold">
+                Match starts amongst the {room.players.length} joined players without extra bots.
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="p-3 bg-slate-950/80 border border-cyan-500/30 rounded-2xl text-center space-y-1">
+                <div className="text-xs font-bold text-cyan-300 flex items-center justify-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                  <span>Waiting for other players to join... (1/{room.maxPlayers})</span>
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Share Room Code <strong className="text-cyan-400 font-mono select-all">{room.id}</strong>. Match starts amongst joined players when ready.
+                </p>
+              </div>
+
+              <button
+                id="start-match-action-btn"
+                onClick={() => {
+                  sounds.playDiceRoll();
+                  onStartGame();
+                }}
+                className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-semibold text-xs flex items-center justify-center gap-2 transition-all"
+                title="Play alone with an AI bot right now"
+              >
+                <Bot className="w-4 h-4 text-purple-400" />
+                <span>Start Solo Practice (Play with AI Opponent)</span>
+              </button>
+            </div>
+          )
         ) : (
           <div className="text-center text-xs text-slate-400 italic py-2">
             Waiting for host to start match...

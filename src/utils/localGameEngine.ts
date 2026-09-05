@@ -1,4 +1,4 @@
-import { GameRoom, GamePlayer, ActionLogEntry } from '../types';
+import { GameRoom, GamePlayer, ActionLogEntry, MathDifficulty } from '../types';
 import { SNAKES, LADDERS, RANDOM_BOT_NAMES } from '../data/gameConstants';
 import { createDiceRollChallenge, createSnakeBiteChallenge, createBonusThrowChallenge } from './mathChallenge';
 
@@ -6,6 +6,7 @@ export class LocalGameEngine {
   private room: GameRoom | null = null;
   private onUpdate: (room: GameRoom) => void;
   private botTimer: any = null;
+  private logCounter: number = 0;
 
   constructor(onUpdate: (room: GameRoom) => void) {
     this.onUpdate = onUpdate;
@@ -15,13 +16,38 @@ export class LocalGameEngine {
     return this.room;
   }
 
+  private createLogId(): string {
+    this.logCounter += 1;
+    return `log_${Date.now()}_${this.logCounter}_${Math.random().toString(36).substring(2, 6)}`;
+  }
+
+  private addLog(
+    text: string,
+    type: ActionLogEntry['type'],
+    playerId: string,
+    playerName: string
+  ) {
+    if (!this.room) return;
+    this.room.actionLog.unshift({
+      id: this.createLogId(),
+      playerId,
+      playerName,
+      text,
+      type,
+      timestamp: Date.now(),
+    });
+    if (this.room.actionLog.length > 40) {
+      this.room.actionLog = this.room.actionLog.slice(0, 40);
+    }
+  }
+
   private emitUpdate() {
     if (this.room) {
       this.onUpdate({ ...this.room, players: this.room.players.map((p) => ({ ...p })) });
     }
   }
 
-  public quickMatch(playerProfile: { username: string; skinId: string }, isTournament: boolean = false): GameRoom {
+  public quickMatch(playerProfile: { username: string; skinId: string; mathDifficulty?: MathDifficulty }, isTournament: boolean = false): GameRoom {
     this.clearBotTimer();
     const humanPlayer: GamePlayer = {
       id: 'local_human',
@@ -35,6 +61,8 @@ export class LocalGameEngine {
       avatarIndex: 0,
       isHost: true,
       isReady: true,
+      mathDifficulty: playerProfile.mathDifficulty || 'medium',
+      turnsWithoutMoving: 0,
     };
 
     const randomBotName = RANDOM_BOT_NAMES[Math.floor(Math.random() * RANDOM_BOT_NAMES.length)];
@@ -66,7 +94,7 @@ export class LocalGameEngine {
       createdAt: Date.now(),
       actionLog: [
         {
-          id: `log_${Date.now()}`,
+          id: this.createLogId(),
           playerId: humanPlayer.id,
           playerName: humanPlayer.username,
           text: `Match started! ${humanPlayer.username} vs ${botPlayer.username}`,
@@ -85,10 +113,11 @@ export class LocalGameEngine {
 
   public createRoom(
     roomName: string,
-    timerDuration: 5 | 10,
+    timerDuration: 5 | 10 | 15,
     isPrivate: boolean,
     isTournament: boolean,
-    playerProfile: { username: string; skinId: string }
+    playerProfile: { username: string; skinId: string; mathDifficulty?: MathDifficulty },
+    maxPlayers: number = 4
   ): GameRoom {
     this.clearBotTimer();
     const humanPlayer: GamePlayer = {
@@ -103,6 +132,8 @@ export class LocalGameEngine {
       avatarIndex: 0,
       isHost: true,
       isReady: true,
+      mathDifficulty: playerProfile.mathDifficulty || 'medium',
+      turnsWithoutMoving: 0,
     };
 
     const newRoom: GameRoom = {
@@ -111,7 +142,7 @@ export class LocalGameEngine {
       isPrivate,
       isTournament,
       timerDuration,
-      maxPlayers: 2,
+      maxPlayers: Math.min(4, Math.max(2, maxPlayers || 4)),
       players: [humanPlayer],
       status: 'waiting',
       currentTurnIndex: 0,
@@ -120,7 +151,7 @@ export class LocalGameEngine {
       createdAt: Date.now(),
       actionLog: [
         {
-          id: `log_${Date.now()}`,
+          id: this.createLogId(),
           playerId: humanPlayer.id,
           playerName: humanPlayer.username,
           text: `Room created by ${humanPlayer.username}`,
@@ -139,28 +170,28 @@ export class LocalGameEngine {
 
   public addBot() {
     if (!this.room || this.room.players.length >= this.room.maxPlayers) return;
-    const botName = RANDOM_BOT_NAMES[Math.floor(Math.random() * RANDOM_BOT_NAMES.length)];
+    const availableNames = RANDOM_BOT_NAMES.filter((n) => !this.room?.players.some((p) => p.username.startsWith(n)));
+    const botName = availableNames.length > 0
+      ? availableNames[Math.floor(Math.random() * availableNames.length)]
+      : RANDOM_BOT_NAMES[Math.floor(Math.random() * RANDOM_BOT_NAMES.length)];
+
+    const botSkins = ['golden_python', 'coral_striker', 'frost_wyrm', 'magma_drake', 'shadow_viper', 'neon_cyber'];
+    const unusedSkin = botSkins.find((s) => !this.room?.players.some((p) => p.skinId === s)) || botSkins[this.room.players.length % botSkins.length];
+
     const bot: GamePlayer = {
-      id: `local_bot_${Date.now()}`,
-      username: botName,
-      skinId: 'neon_cyber',
+      id: `local_bot_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+      username: `${botName} [AI]`,
+      skinId: unusedSkin,
       position: 1,
       mathStreak: 0,
       isBot: true,
       score: 0,
       consecutiveExtraTurns: 0,
-      avatarIndex: 1,
+      avatarIndex: this.room.players.length,
       isReady: true,
     };
     this.room.players.push(bot);
-    this.room.actionLog.unshift({
-      id: `log_${Date.now()}`,
-      playerId: bot.id,
-      playerName: bot.username,
-      text: `${bot.username} joined the match`,
-      type: 'info',
-      timestamp: Date.now(),
-    });
+    this.addLog(`${bot.username} joined the match`, 'info', bot.id, bot.username);
     this.emitUpdate();
   }
 
@@ -171,14 +202,7 @@ export class LocalGameEngine {
     }
     this.room.status = 'in_progress';
     this.room.currentTurnIndex = 0;
-    this.room.actionLog.unshift({
-      id: `log_${Date.now()}`,
-      playerId: 'system',
-      playerName: 'System',
-      text: `The race to tile 100 begins!`,
-      type: 'info',
-      timestamp: Date.now(),
-    });
+    this.addLog(`The race to tile 100 begins!`, 'info', 'system', 'System');
     this.emitUpdate();
   }
 
@@ -189,20 +213,19 @@ export class LocalGameEngine {
 
     const dice = Math.floor(Math.random() * 6) + 1;
     this.room.diceValue = dice;
-    this.room.actionLog.unshift({
-      id: `log_${Date.now()}`,
-      playerId: currentPlayer.id,
-      playerName: currentPlayer.username,
-      text: `🎲 ${currentPlayer.username} rolled a ${dice}! Answer the math challenge to move!`,
-      type: 'roll',
-      timestamp: Date.now(),
-    });
+    this.addLog(
+      `🎲 ${currentPlayer.username} rolled a ${dice}! Answer the math challenge to move!`,
+      'roll',
+      currentPlayer.id,
+      currentPlayer.username
+    );
 
     const challenge = createDiceRollChallenge(
       currentPlayer.id,
       currentPlayer.position,
       dice,
-      this.room.timerDuration
+      this.room.timerDuration,
+      currentPlayer.mathDifficulty || 'medium'
     );
     this.room.activeChallenge = challenge;
     this.emitUpdate();
@@ -219,16 +242,15 @@ export class LocalGameEngine {
     if (challenge.type === 'dice_move') {
       if (isCorrect) {
         currentPlayer.mathStreak += 1;
+        currentPlayer.turnsWithoutMoving = 0;
         const targetTile = Math.min(100, currentPlayer.position + (challenge.rolledValue || 1));
         currentPlayer.position = targetTile;
-        this.room.actionLog.unshift({
-          id: `log_${Date.now()}`,
-          playerId: currentPlayer.id,
-          playerName: currentPlayer.username,
-          text: `🎯 ${currentPlayer.username} answered correctly! Advanced to tile ${targetTile}.`,
-          type: 'math_success',
-          timestamp: Date.now(),
-        });
+        this.addLog(
+          `🎯 ${currentPlayer.username} answered correctly! Advanced to tile ${targetTile}.`,
+          'math_success',
+          currentPlayer.id,
+          currentPlayer.username
+        );
 
         // Check for victory
         if (currentPlayer.position >= 100) {
@@ -236,14 +258,12 @@ export class LocalGameEngine {
           this.room.status = 'game_over';
           this.room.winner = currentPlayer;
           this.room.activeChallenge = null;
-          this.room.actionLog.unshift({
-            id: `log_${Date.now()}`,
-            playerId: currentPlayer.id,
-            playerName: currentPlayer.username,
-            text: `👑 VICTORY! ${currentPlayer.username} reached tile 100!`,
-            type: 'win',
-            timestamp: Date.now(),
-          });
+          this.addLog(
+            `👑 VICTORY! ${currentPlayer.username} reached tile 100!`,
+            'win',
+            currentPlayer.id,
+            currentPlayer.username
+          );
           this.emitUpdate();
           return;
         }
@@ -252,35 +272,32 @@ export class LocalGameEngine {
         const ladder = LADDERS.find((l) => l.bottom === targetTile);
         if (ladder) {
           currentPlayer.position = ladder.top;
-          this.room.actionLog.unshift({
-            id: `log_${Date.now()}`,
-            playerId: currentPlayer.id,
-            playerName: currentPlayer.username,
-            text: `🪜 LADDER CLIMB! ${currentPlayer.username} climbed from ${ladder.bottom} to ${ladder.top}!`,
-            type: 'ladder_climb',
-            timestamp: Date.now(),
-          });
+          this.addLog(
+            `🪜 LADDER CLIMB! ${currentPlayer.username} climbed from ${ladder.bottom} to ${ladder.top}!`,
+            'ladder_climb',
+            currentPlayer.id,
+            currentPlayer.username
+          );
         }
 
         // Check for Snake
         const snake = SNAKES.find((s) => s.head === targetTile);
         if (snake) {
           currentPlayer.position = snake.tail;
-          this.room.actionLog.unshift({
-            id: `log_${Date.now()}`,
-            playerId: currentPlayer.id,
-            playerName: currentPlayer.username,
-            text: `🐍 SNAKE BITE! ${currentPlayer.username} slid from ${snake.head} down to ${snake.tail}!`,
-            type: 'snake_slide',
-            timestamp: Date.now(),
-          });
+          this.addLog(
+            `🐍 SNAKE BITE! ${currentPlayer.username} slid from ${snake.head} down to ${snake.tail}!`,
+            'snake_slide',
+            currentPlayer.id,
+            currentPlayer.username
+          );
 
           // Trigger snake bite escape challenge
           this.room.activeChallenge = createSnakeBiteChallenge(
             currentPlayer.id,
             snake.head,
             snake.tail,
-            this.room.timerDuration
+            this.room.timerDuration,
+            currentPlayer.mathDifficulty || 'medium'
           );
           this.emitUpdate();
           return;
@@ -290,55 +307,52 @@ export class LocalGameEngine {
       } else {
         // Wrong answer
         currentPlayer.mathStreak = 0;
-        this.room.actionLog.unshift({
-          id: `log_${Date.now()}`,
-          playerId: currentPlayer.id,
-          playerName: currentPlayer.username,
-          text: `❌ ${currentPlayer.username} answered incorrectly. Token stays on tile ${currentPlayer.position}.`,
-          type: 'math_fail',
-          timestamp: Date.now(),
-        });
+        currentPlayer.turnsWithoutMoving = (currentPlayer.turnsWithoutMoving || 0) + 1;
+        this.addLog(
+          `❌ ${currentPlayer.username} answered incorrectly. Token stays on tile ${currentPlayer.position}.`,
+          'math_fail',
+          currentPlayer.id,
+          currentPlayer.username
+        );
         this.finishTurn();
       }
     } else if (challenge.type === 'snake_bite') {
       if (isCorrect) {
         currentPlayer.mathStreak += 1;
-        this.room.actionLog.unshift({
-          id: `log_${Date.now()}`,
-          playerId: currentPlayer.id,
-          playerName: currentPlayer.username,
-          text: `✨ ${currentPlayer.username} solved the Snake Bite Challenge! Bonus Question unlocked!`,
-          type: 'bonus_award',
-          timestamp: Date.now(),
-        });
+        this.addLog(
+          `✨ ${currentPlayer.username} solved the Snake Bite Challenge! Bonus Question unlocked!`,
+          'bonus_award',
+          currentPlayer.id,
+          currentPlayer.username
+        );
         // Offer bonus question for extra throw
-        this.room.activeChallenge = createBonusThrowChallenge(currentPlayer.id, 8);
+        this.room.activeChallenge = createBonusThrowChallenge(
+          currentPlayer.id,
+          8,
+          currentPlayer.mathDifficulty || 'medium'
+        );
         this.emitUpdate();
         return;
       } else {
         currentPlayer.mathStreak = 0;
-        this.room.actionLog.unshift({
-          id: `log_${Date.now()}`,
-          playerId: currentPlayer.id,
-          playerName: currentPlayer.username,
-          text: `❌ Snake escape failed. Turn ends.`,
-          type: 'math_fail',
-          timestamp: Date.now(),
-        });
+        this.addLog(
+          `❌ Snake escape failed. Turn ends.`,
+          'math_fail',
+          currentPlayer.id,
+          currentPlayer.username
+        );
         this.finishTurn();
       }
     } else if (challenge.type === 'bonus_extra_throw') {
       if (isCorrect) {
         currentPlayer.mathStreak += 1;
         this.room.extraTurnAwarded = true;
-        this.room.actionLog.unshift({
-          id: `log_${Date.now()}`,
-          playerId: currentPlayer.id,
-          playerName: currentPlayer.username,
-          text: `🎉 BONUS SOLVED! ${currentPlayer.username} EARNED AN EXTRA DICE THROW!`,
-          type: 'bonus_award',
-          timestamp: Date.now(),
-        });
+        this.addLog(
+          `🎉 BONUS SOLVED! ${currentPlayer.username} EARNED AN EXTRA DICE THROW!`,
+          'bonus_award',
+          currentPlayer.id,
+          currentPlayer.username
+        );
         this.room.activeChallenge = null;
         this.emitUpdate();
         if (currentPlayer.isBot && this.room.status === 'in_progress') {
@@ -346,14 +360,12 @@ export class LocalGameEngine {
         }
         return;
       } else {
-        this.room.actionLog.unshift({
-          id: `log_${Date.now()}`,
-          playerId: currentPlayer.id,
-          playerName: currentPlayer.username,
-          text: `Bonus question missed. Turn ends.`,
-          type: 'math_fail',
-          timestamp: Date.now(),
-        });
+        this.addLog(
+          `Bonus question missed. Turn ends.`,
+          'math_fail',
+          currentPlayer.id,
+          currentPlayer.username
+        );
         this.finishTurn();
       }
     }
@@ -364,14 +376,13 @@ export class LocalGameEngine {
     const currentPlayer = this.room.players[this.room.currentTurnIndex];
     if (currentPlayer) {
       currentPlayer.mathStreak = 0;
-      this.room.actionLog.unshift({
-        id: `log_${Date.now()}`,
-        playerId: currentPlayer.id,
-        playerName: currentPlayer.username,
-        text: `⏳ Time expired for ${currentPlayer.username}!`,
-        type: 'math_fail',
-        timestamp: Date.now(),
-      });
+      currentPlayer.turnsWithoutMoving = (currentPlayer.turnsWithoutMoving || 0) + 1;
+      this.addLog(
+        `⏳ Time expired for ${currentPlayer.username}!`,
+        'math_fail',
+        currentPlayer.id,
+        currentPlayer.username
+      );
     }
     this.finishTurn();
   }
@@ -393,14 +404,12 @@ export class LocalGameEngine {
     // Advance turn
     this.room.currentTurnIndex = (this.room.currentTurnIndex + 1) % this.room.players.length;
     const nextPlayer = this.room.players[this.room.currentTurnIndex];
-    this.room.actionLog.unshift({
-      id: `log_${Date.now()}`,
-      playerId: nextPlayer.id,
-      playerName: nextPlayer.username,
-      text: `Turn passed to ${nextPlayer.username}`,
-      type: 'info',
-      timestamp: Date.now(),
-    });
+    this.addLog(
+      `Turn passed to ${nextPlayer.username}`,
+      'info',
+      nextPlayer.id,
+      nextPlayer.username
+    );
     this.emitUpdate();
 
     // Check if next player is a bot
@@ -465,7 +474,7 @@ export class LocalGameEngine {
     this.room.currentTurnIndex = 0;
     this.room.actionLog = [
       {
-        id: `log_${Date.now()}`,
+        id: this.createLogId(),
         playerId: 'system',
         playerName: 'System',
         text: `New match started!`,

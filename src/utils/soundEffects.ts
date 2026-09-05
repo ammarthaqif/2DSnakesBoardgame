@@ -194,6 +194,31 @@ class SoundManager {
     });
   }
 
+  public playTrophy() {
+    if (this.isMuted) return;
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const notes = [587.33, 739.99, 880.00, 1174.66]; // D5, F#5, A5, D6 triumphant fanfare
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const time = now + idx * 0.09;
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, time);
+      gain.gain.setValueAtTime(0.2, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.35);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(time);
+      osc.stop(time + 0.4);
+    });
+  }
+
   public playTick(urgent: boolean = false) {
     if (this.isMuted) return;
     const ctx = this.getContext();

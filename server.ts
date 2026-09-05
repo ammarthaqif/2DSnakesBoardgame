@@ -3,7 +3,7 @@ import http from 'http';
 import path from 'path';
 import { Server as SocketIOServer, Socket } from 'socket.io';
 import { createServer as createViteServer } from 'vite';
-import { GameRoom, GamePlayer, MathChallenge, ActionLogEntry, LeaderboardEntry, TournamentEvent } from './src/types';
+import { GameRoom, GamePlayer, MathChallenge, ActionLogEntry, LeaderboardEntry, TournamentEvent, MathDifficulty } from './src/types';
 import { SNAKES, LADDERS, INITIAL_LEADERBOARD, CURRENT_TOURNAMENT, RANDOM_BOT_NAMES } from './src/data/gameConstants';
 import { createDiceRollChallenge, createSnakeBiteChallenge, createBonusThrowChallenge } from './src/utils/mathChallenge';
 
@@ -16,6 +16,8 @@ const socketToPlayer: Map<string, { playerId: string; roomId?: string }> = new M
 const roomTimers: Map<string, NodeJS.Timeout> = new Map();
 // Map playerId -> disconnect grace timeout
 const disconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+// Map roomId -> Set of achieved milestone keys
+const roomMilestones: Map<string, Set<string>> = new Map();
 
 let leaderboard: LeaderboardEntry[] = [...INITIAL_LEADERBOARD];
 let currentTournament: TournamentEvent = { ...CURRENT_TOURNAMENT };
@@ -152,9 +154,11 @@ async function startServer() {
       }));
   }
 
+  let serverLogCounter = 0;
   function addLog(room: GameRoom, text: string, type: ActionLogEntry['type'], player?: GamePlayer) {
+    serverLogCounter += 1;
     const entry: ActionLogEntry = {
-      id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      id: `log_${Date.now()}_${serverLogCounter}_${Math.random().toString(36).substring(2, 6)}`,
       timestamp: Date.now(),
       playerId: player?.id || 'system',
       playerName: player?.username || 'System',
@@ -162,6 +166,28 @@ async function startServer() {
       type,
     };
     room.actionLog = [entry, ...room.actionLog.slice(0, 30)];
+  }
+
+  function checkAndBroadcastMilestone(
+    room: GameRoom,
+    player: GamePlayer,
+    key: string,
+    milestone: {
+      title: string;
+      message: string;
+      icon?: 'trophy' | 'flame' | 'ladder' | 'star' | 'zap' | 'shield';
+      type?: 'success' | 'warning' | 'info' | 'streak';
+    }
+  ) {
+    let milestones = roomMilestones.get(room.id);
+    if (!milestones) {
+      milestones = new Set();
+      roomMilestones.set(room.id, milestones);
+    }
+    if (!milestones.has(key)) {
+      milestones.add(key);
+      io.to(room.id).emit('milestone_unlocked', milestone);
+    }
   }
 
   function advanceTurn(room: GameRoom) {
@@ -243,7 +269,13 @@ async function startServer() {
     addLog(room, `${player.username} rolled a ${rolled}! Solving math challenge...`, 'roll', player);
 
     // Create dice roll math challenge: Current tile + rolled dice
-    const challenge = createDiceRollChallenge(player.id, player.position, rolled, room.timerDuration);
+    const challenge = createDiceRollChallenge(
+      player.id,
+      player.position,
+      rolled,
+      room.timerDuration,
+      player.mathDifficulty || 'medium'
+    );
     room.activeChallenge = challenge;
 
     io.to(room.id).emit('room_update', room);
@@ -273,6 +305,7 @@ async function startServer() {
     if (challenge.type === 'dice_move') {
       if (isCorrect) {
         player.mathStreak += 1;
+        player.turnsWithoutMoving = 0;
         addLog(
           room,
           `${player.username} solved ${challenge.questionText} (${answer}) correctly! Moving ahead!`,
@@ -280,9 +313,36 @@ async function startServer() {
           player
         );
 
+        // Check math streak milestones
+        if (player.mathStreak === 3) {
+          checkAndBroadcastMilestone(room, player, `streak_3_${player.id}_${Math.floor(Date.now() / 60000)}`, {
+            title: '3-Match Math Streak!',
+            message: `${player.username} is on fire with 3 correct math answers in a row!`,
+            icon: 'flame',
+            type: 'streak',
+          });
+        } else if (player.mathStreak === 5) {
+          checkAndBroadcastMilestone(room, player, `streak_5_${player.id}_${Math.floor(Date.now() / 60000)}`, {
+            title: '5-Match Math Streak!',
+            message: `${player.username} is an unstoppable mental math prodigy!`,
+            icon: 'flame',
+            type: 'streak',
+          });
+        }
+
         // Move player forward
         const targetTile = Math.min(100, player.position + (challenge.rolledValue || 1));
         player.position = targetTile;
+
+        // Check halfway milestone
+        if (player.position >= 50) {
+          checkAndBroadcastMilestone(room, player, 'first_tile_50', {
+            title: 'First to reach Tile 50!',
+            message: `${player.username} crossed the halfway mark on the board!`,
+            icon: 'trophy',
+            type: 'success',
+          });
+        }
 
         // Check for Win condition first
         if (player.position >= 100) {
@@ -306,7 +366,13 @@ async function startServer() {
           );
 
           // Popup mathematical question: current tile minus the snake tail number with timer
-          const snakeChallenge = createSnakeBiteChallenge(player.id, snake.head, snake.tail, room.timerDuration);
+          const snakeChallenge = createSnakeBiteChallenge(
+            player.id,
+            snake.head,
+            snake.tail,
+            room.timerDuration,
+            player.mathDifficulty || 'medium'
+          );
           room.activeChallenge = snakeChallenge;
           room.status = 'answering_snake';
 
@@ -352,6 +418,7 @@ async function startServer() {
       } else {
         // Incorrect answer or timeout: they stay put
         player.mathStreak = 0;
+        player.turnsWithoutMoving = (player.turnsWithoutMoving || 0) + 1;
         addLog(
           room,
           `${player.username} missed the math challenge (${challenge.questionText}). Staying put at tile ${player.position}!`,
@@ -370,7 +437,11 @@ async function startServer() {
         );
 
         // Give them a bonus question for an extra dice throw
-        const bonusChallenge = createBonusThrowChallenge(player.id, 8);
+        const bonusChallenge = createBonusThrowChallenge(
+          player.id,
+          8,
+          player.mathDifficulty || 'medium'
+        );
         room.activeChallenge = bonusChallenge;
         room.status = 'answering_bonus';
 
@@ -436,9 +507,10 @@ async function startServer() {
       roomName: string;
       customCode?: string;
       isTournament: boolean;
-      timerDuration: 5 | 10;
+      timerDuration: 5 | 10 | 15;
       isPrivate: boolean;
-      player: { id?: string; username: string; skinId: string };
+      maxPlayers?: number;
+      player: { id?: string; username: string; skinId: string; mathDifficulty?: MathDifficulty };
     }) => {
       let roomId = '';
 
@@ -475,14 +547,18 @@ async function startServer() {
         isHost: true,
         isReady: true,
         connected: true,
+        mathDifficulty: data.player?.mathDifficulty || 'medium',
+        turnsWithoutMoving: 0,
       };
+
+      const requestedMaxPlayers = data.maxPlayers ? Math.min(4, Math.max(2, Number(data.maxPlayers))) : 4;
 
       const newRoom: GameRoom = {
         id: roomId,
         name: data.roomName || `${data.player.username || 'Host'}'s Game`,
         isTournament: data.isTournament || false,
         timerDuration: data.timerDuration || 10,
-        maxPlayers: 4,
+        maxPlayers: requestedMaxPlayers,
         status: 'waiting',
         players: [hostPlayer],
         currentTurnIndex: 0,
@@ -513,28 +589,31 @@ async function startServer() {
 
       const clientPlayerId = data.player?.id;
 
-      // Check if this player is rejoining their existing slot in the room
-      const existingPlayer = room.players.find(
-        (p) =>
-          (clientPlayerId && p.id === clientPlayerId) ||
-          (p.username.toLowerCase() === (data.player.username || '').toLowerCase() && !p.isBot)
+      // Reconnection check: ONLY reconnect if the player ID already exists in the room
+      // AND that player's existing socket is not currently active (or is the exact same socket)
+      const existingPlayerById = clientPlayerId ? room.players.find((p) => p.id === clientPlayerId) : undefined;
+      const existingSocketId = clientPlayerId ? playerSockets.get(clientPlayerId) : undefined;
+      const isExistingSocketStillActive = Boolean(
+        existingSocketId &&
+        existingSocketId !== socket.id &&
+        io.sockets.sockets.get(existingSocketId)?.connected
       );
 
-      if (existingPlayer) {
+      if (existingPlayerById && (!isExistingSocketStillActive || existingSocketId === socket.id)) {
         // Clear any disconnect grace timer
-        const discTimer = disconnectTimers.get(existingPlayer.id);
+        const discTimer = disconnectTimers.get(existingPlayerById.id);
         if (discTimer) {
           clearTimeout(discTimer);
-          disconnectTimers.delete(existingPlayer.id);
+          disconnectTimers.delete(existingPlayerById.id);
         }
 
-        playerSockets.set(existingPlayer.id, socket.id);
-        socketToPlayer.set(socket.id, { playerId: existingPlayer.id, roomId: room.id });
-        existingPlayer.connected = true;
+        playerSockets.set(existingPlayerById.id, socket.id);
+        socketToPlayer.set(socket.id, { playerId: existingPlayerById.id, roomId: room.id });
+        existingPlayerById.connected = true;
         socket.join(room.id);
 
-        addLog(room, `${existingPlayer.username} reconnected to the room.`, 'info', existingPlayer);
-        socket.emit('joined_room', { roomId: room.id, room, player: existingPlayer });
+        addLog(room, `${existingPlayerById.username} reconnected to the room.`, 'info', existingPlayerById);
+        socket.emit('joined_room', { roomId: room.id, room, player: existingPlayerById });
         io.to(room.id).emit('room_update', room);
         return;
       }
@@ -549,20 +628,25 @@ async function startServer() {
       }
 
       // Avoid identical usernames in the same match
-      let chosenUsername = data.player.username || `Player${room.players.length + 1}`;
+      let chosenUsername = (data.player?.username || '').trim() || `Player ${room.players.length + 1}`;
       const duplicateCount = room.players.filter((p) => p.username.startsWith(chosenUsername)).length;
       if (duplicateCount > 0) {
         chosenUsername = `${chosenUsername} #${duplicateCount + 1}`;
       }
 
-      const playerId = clientPlayerId || `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      // Assign a unique playerId if clientPlayerId is already active in this room
+      let playerId = clientPlayerId;
+      if (!playerId || room.players.some((p) => p.id === playerId)) {
+        playerId = `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      }
+
       playerSockets.set(playerId, socket.id);
       socketToPlayer.set(socket.id, { playerId, roomId: room.id });
 
       const newPlayer: GamePlayer = {
         id: playerId,
         username: chosenUsername,
-        skinId: data.player.skinId || 'neon_cyber',
+        skinId: data.player?.skinId || 'neon_cyber',
         position: 1,
         isBot: false,
         score: 0,
@@ -572,6 +656,8 @@ async function startServer() {
         isHost: false,
         isReady: true,
         connected: true,
+        mathDifficulty: (data.player as any)?.mathDifficulty || 'medium',
+        turnsWithoutMoving: 0,
       };
 
       room.players.push(newPlayer);
@@ -637,6 +723,8 @@ async function startServer() {
           isHost: false,
           isReady: true,
           connected: true,
+          mathDifficulty: (data.player as any)?.mathDifficulty || 'medium',
+          turnsWithoutMoving: 0,
         };
         targetRoom.players.push(newPlayer);
         socket.join(targetRoom.id);
@@ -662,6 +750,8 @@ async function startServer() {
           isHost: true,
           isReady: true,
           connected: true,
+          mathDifficulty: (data.player as any)?.mathDifficulty || 'medium',
+          turnsWithoutMoving: 0,
         };
 
         const newRoom: GameRoom = {
@@ -696,14 +786,18 @@ async function startServer() {
       const room = findRoomByCode(data.roomId) || rooms.get(data.roomId);
       if (!room || room.status !== 'waiting' || room.players.length >= room.maxPlayers) return;
 
-      const randomName = RANDOM_BOT_NAMES[Math.floor(Math.random() * RANDOM_BOT_NAMES.length)];
-      const botSkins = ['coral_striker', 'golden_python', 'frost_wyrm', 'magma_drake'];
-      const randomSkin = botSkins[Math.floor(Math.random() * botSkins.length)];
+      const botSkins = ['coral_striker', 'golden_python', 'frost_wyrm', 'magma_drake', 'shadow_viper', 'neon_cyber'];
+      const unusedSkin = botSkins.find((s) => !room.players.some((p) => p.skinId === s)) || botSkins[room.players.length % botSkins.length];
+
+      const availableNames = RANDOM_BOT_NAMES.filter((n) => !room.players.some((p) => p.username.startsWith(n)));
+      const chosenName = availableNames.length > 0
+        ? availableNames[Math.floor(Math.random() * availableNames.length)]
+        : RANDOM_BOT_NAMES[Math.floor(Math.random() * RANDOM_BOT_NAMES.length)];
 
       const botPlayer: GamePlayer = {
         id: `bot_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
-        username: `${randomName} [AI]`,
-        skinId: randomSkin,
+        username: `${chosenName} [AI]`,
+        skinId: unusedSkin,
         position: 1,
         isBot: true,
         score: 0,
@@ -712,6 +806,8 @@ async function startServer() {
         avatarIndex: room.players.length,
         isReady: true,
         connected: true,
+        mathDifficulty: 'medium',
+        turnsWithoutMoving: 0,
       };
 
       room.players.push(botPlayer);
@@ -747,7 +843,17 @@ async function startServer() {
       room.status = 'in_progress';
       room.currentTurnIndex = 0;
       const firstPlayer = room.players[0];
-      addLog(room, `Game started! ${firstPlayer.username} rolls first!`, 'info', firstPlayer);
+      const humanPlayers = room.players.filter((p) => !p.isBot);
+      if (humanPlayers.length >= 2) {
+        addLog(
+          room,
+          `Online multiplayer match started amongst ${humanPlayers.map((p) => p.username).join(' vs ')}! ${firstPlayer.username} rolls first!`,
+          'info',
+          firstPlayer
+        );
+      } else {
+        addLog(room, `Game started! ${firstPlayer.username} rolls first!`, 'info', firstPlayer);
+      }
 
       io.to(room.id).emit('room_update', room);
       io.emit('lobby_rooms', getPublicRooms());

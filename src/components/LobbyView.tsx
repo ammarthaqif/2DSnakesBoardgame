@@ -27,10 +27,11 @@ interface LobbyViewProps {
   onQuickMatch: (isTournament?: boolean) => void;
   onCreateRoom: (
     roomName: string,
-    timerDuration: 5 | 10,
+    timerDuration: 5 | 10 | 15,
     isPrivate: boolean,
     isTournament: boolean,
-    customCode?: string
+    customCode?: string,
+    maxPlayers?: number
   ) => void;
   onJoinRoom: (roomId: string) => void;
   onOpenSkins: () => void;
@@ -56,7 +57,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRoomName, setNewRoomName] = useState(`${profile.username}'s Arena`);
   const [customRoomCode, setCustomRoomCode] = useState('');
-  const [newRoomTimer, setNewRoomTimer] = useState<5 | 10>(10);
+  const [newRoomMaxPlayers, setNewRoomMaxPlayers] = useState<2 | 3 | 4>(4);
+  const [newRoomTimer, setNewRoomTimer] = useState<5 | 10 | 15>(10);
   const [isPrivateRoom, setIsPrivateRoom] = useState(false);
 
   const handleJoinSubmit = (e: React.FormEvent) => {
@@ -69,7 +71,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     sounds.playDiceRoll();
-    onCreateRoom(newRoomName, newRoomTimer, isPrivateRoom, false, customRoomCode.trim());
+    onCreateRoom(newRoomName, newRoomTimer, isPrivateRoom, false, customRoomCode.trim(), newRoomMaxPlayers);
     setShowCreateModal(false);
   };
 
@@ -98,12 +100,24 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
                 Lv.{profile.level}
               </span>
             </div>
-            <div className="flex items-center gap-2 text-xs text-slate-400">
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 flex-wrap">
               <span className="flex items-center gap-1 text-amber-400 font-mono font-bold">
                 <Trophy className="w-3 h-3" /> {profile.trophies}
               </span>
               <span>•</span>
               <span>{profile.matchesWon} Wins</span>
+              <span>•</span>
+              <span
+                className={`text-[9px] px-1.5 py-0.2 rounded border font-black uppercase tracking-wider ${
+                  profile.mathDifficulty === 'hard'
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : profile.mathDifficulty === 'easy'
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                }`}
+              >
+                {profile.mathDifficulty || 'medium'}
+              </span>
             </div>
           </div>
         </div>
@@ -314,34 +328,105 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-slate-300 font-bold mb-1">
-                  Math Challenge Timer Preset
-                </label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-300 font-bold">Max Players</label>
+                  <span className="text-[10px] text-cyan-400 font-bold">Up to 4 Concurrent</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
                   <button
                     type="button"
-                    onClick={() => setNewRoomTimer(5)}
-                    className={`py-2 px-3 rounded-xl border text-center font-bold transition-all flex items-center justify-center gap-1.5 ${
-                      newRoomTimer === 5
+                    onClick={() => setNewRoomMaxPlayers(2)}
+                    className={`py-2 px-2 rounded-xl border text-center font-bold transition-all text-xs ${
+                      newRoomMaxPlayers === 2
                         ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300'
                         : 'border-slate-800 bg-slate-950 text-slate-400'
                     }`}
                   >
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>5 Seconds (Blitz)</span>
+                    2 Players
                   </button>
                   <button
                     type="button"
-                    onClick={() => setNewRoomTimer(10)}
-                    className={`py-2 px-3 rounded-xl border text-center font-bold transition-all flex items-center justify-center gap-1.5 ${
-                      newRoomTimer === 10
+                    onClick={() => setNewRoomMaxPlayers(3)}
+                    className={`py-2 px-2 rounded-xl border text-center font-bold transition-all text-xs ${
+                      newRoomMaxPlayers === 3
                         ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300'
                         : 'border-slate-800 bg-slate-950 text-slate-400'
                     }`}
                   >
-                    <Clock className="w-3.5 h-3.5" />
-                    <span>10 Seconds (Standard)</span>
+                    3 Players
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewRoomMaxPlayers(4)}
+                    className={`py-2 px-2 rounded-xl border text-center font-bold transition-all text-xs flex items-center justify-center gap-1 ${
+                      newRoomMaxPlayers === 4
+                        ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300 ring-1 ring-cyan-500/40'
+                        : 'border-slate-800 bg-slate-950 text-slate-400'
+                    }`}
+                  >
+                    <span>4 Players</span>
+                    <span className="text-[9px] text-amber-400">★</span>
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Play with up to 4 friends using the room code or link, or add AI bots in open slots.
+                </p>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-slate-300 font-bold">
+                    Turn Timer Speed
+                  </label>
+                  <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">
+                    {newRoomTimer}s Per Turn
+                  </span>
+                </div>
+
+                <div
+                  className="grid grid-cols-3 gap-2"
+                  role="radiogroup"
+                  aria-label="Turn timer duration options"
+                >
+                  {[
+                    { sec: 5 as const, title: '5 Sec', badge: '⚡ Blitz', desc: 'Fast & frantic pace' },
+                    { sec: 10 as const, title: '10 Sec', badge: '⏱️ Standard', desc: 'Balanced competition' },
+                    { sec: 15 as const, title: '15 Sec', badge: '🧠 Strategic', desc: 'Deep calculation' },
+                  ].map(({ sec, title, badge, desc }) => {
+                    const isSelected = newRoomTimer === sec;
+                    return (
+                      <label
+                        key={sec}
+                        id={`timer-option-${sec}s`}
+                        className={`py-2.5 px-2 rounded-xl border cursor-pointer transition-all flex flex-col items-center justify-between text-center relative select-none ${
+                          isSelected
+                            ? 'border-cyan-400 bg-cyan-950/50 text-cyan-200 ring-1 ring-cyan-400 shadow-md shadow-cyan-950/40'
+                            : 'border-slate-800 bg-slate-950 hover:border-slate-700 text-slate-400'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="turn-timer"
+                          value={sec}
+                          checked={isSelected}
+                          onChange={() => setNewRoomTimer(sec)}
+                          className="sr-only"
+                        />
+                        <div className="flex items-center gap-1">
+                          <span
+                            className={`w-2.5 h-2.5 rounded-full border flex items-center justify-center ${
+                              isSelected ? 'border-cyan-400 bg-cyan-400' : 'border-slate-600'
+                            }`}
+                          >
+                            {isSelected && <span className="w-1 h-1 rounded-full bg-slate-950" />}
+                          </span>
+                          <span className="text-xs font-black">{title}</span>
+                        </div>
+                        <span className="text-[9px] font-bold text-slate-300 mt-1">{badge}</span>
+                        <span className="text-[8px] text-slate-500 leading-none mt-0.5">{desc}</span>
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
 
