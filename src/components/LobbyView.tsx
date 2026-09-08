@@ -65,7 +65,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
     e.preventDefault();
     if (!roomCodeInput.trim()) return;
     sounds.playDiceRoll();
-    onJoinRoom(roomCodeInput.trim().toUpperCase());
+    onJoinRoom(roomCodeInput.trim());
   };
 
   const handleCreateSubmit = (e: React.FormEvent) => {
@@ -247,7 +247,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           <input
             id="room-code-input"
             type="text"
-            placeholder="Enter Room Code (e.g. ROOM-1234)"
+            placeholder="Room Code or Paste Invite Link"
             value={roomCodeInput}
             onChange={(e) => setRoomCodeInput(e.target.value)}
             className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono font-bold text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-400 uppercase"

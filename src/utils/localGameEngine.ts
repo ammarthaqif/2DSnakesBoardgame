@@ -168,7 +168,7 @@ export class LocalGameEngine {
     return newRoom;
   }
 
-  public addBot() {
+  public addBot(difficulty?: MathDifficulty) {
     if (!this.room || this.room.players.length >= this.room.maxPlayers) return;
     const availableNames = RANDOM_BOT_NAMES.filter((n) => !this.room?.players.some((p) => p.username.startsWith(n)));
     const botName = availableNames.length > 0
@@ -178,9 +178,13 @@ export class LocalGameEngine {
     const botSkins = ['golden_python', 'coral_striker', 'frost_wyrm', 'magma_drake', 'shadow_viper', 'neon_cyber'];
     const unusedSkin = botSkins.find((s) => !this.room?.players.some((p) => p.skinId === s)) || botSkins[this.room.players.length % botSkins.length];
 
+    const hostPlayer = this.room.players[0];
+    const botDifficulty: MathDifficulty = difficulty || hostPlayer?.mathDifficulty || 'medium';
+    const diffBadge = botDifficulty === 'easy' ? 'Easy' : botDifficulty === 'hard' ? 'Hard' : 'Med';
+
     const bot: GamePlayer = {
       id: `local_bot_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
-      username: `${botName} [AI]`,
+      username: `${botName} [AI ${diffBadge}]`,
       skinId: unusedSkin,
       position: 1,
       mathStreak: 0,
@@ -189,6 +193,8 @@ export class LocalGameEngine {
       consecutiveExtraTurns: 0,
       avatarIndex: this.room.players.length,
       isReady: true,
+      mathDifficulty: botDifficulty,
+      turnsWithoutMoving: 0,
     };
     this.room.players.push(bot);
     this.addLog(`${bot.username} joined the match`, 'info', bot.id, bot.username);
@@ -198,12 +204,17 @@ export class LocalGameEngine {
   public startGame() {
     if (!this.room) return;
     if (this.room.players.length === 1) {
-      this.addBot();
+      const hostDifficulty = this.room.players[0]?.mathDifficulty || 'medium';
+      this.addBot(hostDifficulty);
     }
     this.room.status = 'in_progress';
     this.room.currentTurnIndex = 0;
     this.addLog(`The race to tile 100 begins!`, 'info', 'system', 'System');
     this.emitUpdate();
+    const firstP = this.room.players[0];
+    if (firstP?.isBot) {
+      this.scheduleBotTurn();
+    }
   }
 
   public rollDice() {
@@ -420,9 +431,39 @@ export class LocalGameEngine {
 
   private scheduleBotTurn() {
     this.clearBotTimer();
+    if (!this.room || this.room.status !== 'in_progress') return;
+    const bot = this.room.players[this.room.currentTurnIndex];
+    if (!bot || !bot.isBot) return;
+
+    const diff = bot.mathDifficulty || 'medium';
+    let delay = 500;
+
+    if (this.room.activeChallenge) {
+      // Answering math questions:
+      // Easy bots answer more slowly (1800ms - 2500ms)
+      // Medium bots answer at moderate pace (750ms - 1100ms)
+      // Hard bots answer near-instantaneously (150ms - 300ms)
+      if (diff === 'easy') {
+        delay = 1800 + Math.floor(Math.random() * 700);
+      } else if (diff === 'hard') {
+        delay = 150 + Math.floor(Math.random() * 150);
+      } else {
+        delay = 750 + Math.floor(Math.random() * 350);
+      }
+    } else {
+      // Rolling dice delay:
+      if (diff === 'easy') {
+        delay = 750 + Math.floor(Math.random() * 400);
+      } else if (diff === 'hard') {
+        delay = 120 + Math.floor(Math.random() * 100);
+      } else {
+        delay = 400 + Math.floor(Math.random() * 200);
+      }
+    }
+
     this.botTimer = setTimeout(() => {
       this.stepBotTurn();
-    }, 450);
+    }, delay);
   }
 
   private stepBotTurn() {
@@ -434,9 +475,32 @@ export class LocalGameEngine {
     // Case 1: Bot has an active challenge to answer
     if (this.room.activeChallenge) {
       const chal = this.room.activeChallenge;
-      // 85% chance to answer correctly
-      const isCorrect = Math.random() < 0.85;
-      const answer = isCorrect ? chal.correctAnswer : chal.options[0];
+      const diff = currentPlayer.mathDifficulty || 'medium';
+
+      // Difficulty-based accuracy:
+      // 'Easy': 55% accuracy (higher chance of error, 45% failure rate)
+      // 'Medium': 82% accuracy (balanced)
+      // 'Hard': 98% accuracy (near-instantaneous, sharp precision)
+      let correctChance = 0.82;
+      if (diff === 'easy') {
+        correctChance = 0.55;
+      } else if (diff === 'hard') {
+        correctChance = 0.98;
+      }
+
+      const isCorrect = Math.random() < correctChance;
+      let answer: number;
+
+      if (isCorrect) {
+        answer = chal.correctAnswer;
+      } else {
+        const wrongOptions = chal.options.filter((opt) => opt !== chal.correctAnswer);
+        if (wrongOptions.length > 0) {
+          answer = wrongOptions[Math.floor(Math.random() * wrongOptions.length)];
+        } else {
+          answer = chal.correctAnswer + (Math.random() < 0.5 ? 1 : -1);
+        }
+      }
 
       this.submitMathAnswer(answer);
 

@@ -27,16 +27,41 @@ export const WaitingRoomView: React.FC<WaitingRoomViewProps> = ({
     room.players.find((p) => p.id === currentPlayerId)?.isHost ??
     (room.players[0]?.id === currentPlayerId);
 
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(room.id);
+  const safeCopy = async (text: string) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // fallback below
+    }
+    try {
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.style.position = 'fixed';
+      el.style.opacity = '0';
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleCopyCode = async () => {
+    await safeCopy(room.id);
     setCopiedCode(true);
     sounds.playDiceRoll();
     setTimeout(() => setCopiedCode(false), 1500);
   };
 
-  const handleCopyInviteLink = () => {
+  const handleCopyInviteLink = async () => {
     const inviteUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(room.id)}`;
-    navigator.clipboard.writeText(inviteUrl);
+    await safeCopy(inviteUrl);
     setCopiedLink(true);
     sounds.playDiceRoll();
     setTimeout(() => setCopiedLink(false), 1500);

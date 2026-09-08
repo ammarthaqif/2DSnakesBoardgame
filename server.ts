@@ -22,38 +22,70 @@ const roomMilestones: Map<string, Set<string>> = new Map();
 let leaderboard: LeaderboardEntry[] = [...INITIAL_LEADERBOARD];
 let currentTournament: TournamentEvent = { ...CURRENT_TOURNAMENT };
 
-// Robust helper to lookup rooms by custom code, partial code, case-insensitively
+// Robust helper to lookup rooms by custom code, partial code, full invite URL, case-insensitively
+function extractRoomCode(rawCode: string | undefined): string {
+  if (!rawCode) return '';
+  let clean = rawCode.trim();
+
+  // Extract from full invite link or query parameter if pasted
+  try {
+    if (clean.includes('?room=') || clean.includes('&room=')) {
+      const match = clean.match(/[?&]room=([^&#\s]+)/i);
+      if (match && match[1]) {
+        clean = decodeURIComponent(match[1]);
+      }
+    } else if (clean.includes('://')) {
+      const url = new URL(clean);
+      const r = url.searchParams.get('room');
+      if (r) clean = r;
+    }
+  } catch {
+    // fallback
+  }
+
+  return clean.toUpperCase().replace(/^#/, '').trim();
+}
+
 function findRoomByCode(rawCode: string | undefined): GameRoom | undefined {
-  if (!rawCode) return undefined;
-  const clean = rawCode.trim().toUpperCase().replace(/^#/, '');
+  const clean = extractRoomCode(rawCode);
   if (!clean) return undefined;
 
   // 1. Direct map lookup
   if (rooms.has(clean)) return rooms.get(clean);
 
-  // 2. Lookup with ROOM- prefix if omitted
+  // 2. Lookup with ROOM- prefix if omitted (e.g. "1234" -> "ROOM-1234")
   if (!clean.startsWith('ROOM-') && rooms.has(`ROOM-${clean}`)) {
     return rooms.get(`ROOM-${clean}`);
   }
 
-  // 3. Lookup without ROOM- prefix if provided
+  // 3. Lookup without ROOM- prefix if provided (e.g. "ROOM-1234" -> "1234")
   if (clean.startsWith('ROOM-')) {
     const withoutPrefix = clean.replace('ROOM-', '');
     if (rooms.has(withoutPrefix)) return rooms.get(withoutPrefix);
   }
 
-  // 4. Case-insensitive scan across all active rooms
-  for (const [key, room] of rooms.entries()) {
-    const upperKey = key.toUpperCase();
-    const upperRoomId = room.id.toUpperCase();
-    if (
-      upperKey === clean ||
-      upperRoomId === clean ||
-      upperKey === `ROOM-${clean}` ||
-      upperRoomId === `ROOM-${clean}` ||
-      clean === `ROOM-${upperKey}` ||
-      clean === `ROOM-${upperRoomId}`
-    ) {
+  // 4. Normalized alphanumeric comparison (ignores spaces, hyphens, underscores)
+  const normClean = clean.replace(/[^A-Z0-9]/g, '');
+  if (normClean) {
+    for (const [key, room] of rooms.entries()) {
+      const normKey = key.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const normRoomId = room.id.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+      if (normKey === normClean || normRoomId === normClean) {
+        return room;
+      }
+      if (normKey === `ROOM${normClean}` || normRoomId === `ROOM${normClean}`) {
+        return room;
+      }
+      if (`ROOM${normKey}` === normClean || `ROOM${normRoomId}` === normClean) {
+        return room;
+      }
+    }
+  }
+
+  // 5. Fallback match by exact room name
+  for (const room of rooms.values()) {
+    if (room.name.trim().toUpperCase() === clean) {
       return room;
     }
   }
@@ -250,14 +282,21 @@ async function startServer() {
   }
 
   function scheduleBotTurn(roomId: string) {
-    setTimeout(() => {
-      const room = rooms.get(roomId);
-      if (!room || room.status !== 'in_progress') return;
-      const bot = room.players[room.currentTurnIndex];
-      if (!bot || !bot.isBot) return;
+    const room = rooms.get(roomId);
+    if (!room || room.status !== 'in_progress') return;
+    const bot = room.players[room.currentTurnIndex];
+    if (!bot || !bot.isBot) return;
 
-      executeDiceRoll(room, bot);
-    }, 450);
+    const diff = bot.mathDifficulty || 'medium';
+    const rollDelay = diff === 'easy' ? 800 : diff === 'hard' ? 120 : 400;
+
+    setTimeout(() => {
+      const curR = rooms.get(roomId);
+      if (!curR || curR.status !== 'in_progress') return;
+      const curBot = curR.players[curR.currentTurnIndex];
+      if (!curBot || !curBot.isBot) return;
+      executeDiceRoll(curR, curBot);
+    }, rollDelay);
   }
 
   function executeDiceRoll(room: GameRoom, player: GamePlayer) {
@@ -280,16 +319,43 @@ async function startServer() {
 
     io.to(room.id).emit('room_update', room);
 
-    // If bot, auto answer
+    // If bot, auto answer with difficulty-based speed and error probability
     if (player.isBot) {
+      const diff = player.mathDifficulty || 'medium';
+      let delay = 550;
+      let correctChance = 0.82;
+
+      if (diff === 'easy') {
+        delay = 1800 + Math.floor(Math.random() * 700);
+        correctChance = 0.55;
+      } else if (diff === 'hard') {
+        delay = 150 + Math.floor(Math.random() * 150);
+        correctChance = 0.98;
+      } else {
+        delay = 750 + Math.floor(Math.random() * 350);
+        correctChance = 0.82;
+      }
+
       setTimeout(() => {
         const currentR = rooms.get(room.id);
         if (!currentR || currentR.status !== 'answering_math' || !currentR.activeChallenge) return;
-        // Bot has 90% chance to be correct
-        const isCorrect = Math.random() < 0.9;
-        const answer = isCorrect ? challenge.correctAnswer : challenge.correctAnswer + 1;
+
+        const isCorrect = Math.random() < correctChance;
+        let answer: number;
+
+        if (isCorrect) {
+          answer = challenge.correctAnswer;
+        } else {
+          const wrongOptions = challenge.options.filter((opt) => opt !== challenge.correctAnswer);
+          if (wrongOptions.length > 0) {
+            answer = wrongOptions[Math.floor(Math.random() * wrongOptions.length)];
+          } else {
+            answer = challenge.correctAnswer + (Math.random() < 0.5 ? 1 : -1);
+          }
+        }
+
         processMathAnswer(currentR, player, answer);
-      }, 450);
+      }, delay);
     } else {
       startChallengeTimer(room, player, challenge.timeLimit || room.timerDuration);
     }
@@ -527,7 +593,11 @@ async function startServer() {
       }
 
       if (!roomId) {
-        roomId = `ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
+        let code = `ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
+        while (rooms.has(code)) {
+          code = `ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
+        }
+        roomId = code;
       }
 
       const playerId = data.player?.id || `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
@@ -580,10 +650,11 @@ async function startServer() {
     });
 
     // Join Room (by code or clicking lobby)
-    socket.on('join_room', (data: { roomId: string; player: { id?: string; username: string; skinId: string } }) => {
+    socket.on('join_room', (data: { roomId: string; player: { id?: string; username: string; skinId: string; mathDifficulty?: MathDifficulty } }) => {
       const room = findRoomByCode(data.roomId);
+      console.log(`[server] join_room request: "${data.roomId}" -> resolved room:`, room ? room.id : 'NOT FOUND');
       if (!room) {
-        socket.emit('error_message', `Room "${data.roomId}" not found. Check the room code.`);
+        socket.emit('error_message', `Room "${data.roomId}" not found. Check the room code or invite link.`);
         return;
       }
 

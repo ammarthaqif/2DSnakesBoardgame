@@ -54,19 +54,30 @@ import {
 
 const LOCAL_STORAGE_KEY = 'snake_boardgame_profile_v1';
 
-// Distinct tab session player ID so multiple tabs in the same browser can test multiplayer side-by-side
-const getTabPlayerId = () => {
+// Robust helper to extract clean room code from text, invite link URL, or query parameter
+export function extractRoomCode(raw: string | undefined): string {
+  if (!raw) return '';
+  let str = raw.trim();
   try {
-    let tabId = sessionStorage.getItem('snake_tab_player_id');
-    if (!tabId) {
-      tabId = `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-      sessionStorage.setItem('snake_tab_player_id', tabId);
+    if (str.includes('?room=') || str.includes('&room=')) {
+      const match = str.match(/[?&]room=([^&#\s]+)/i);
+      if (match && match[1]) {
+        str = decodeURIComponent(match[1]);
+      }
+    } else if (str.includes('://')) {
+      const url = new URL(str);
+      const r = url.searchParams.get('room');
+      if (r) str = r;
     }
-    return tabId;
   } catch {
-    return `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    // fallback
   }
-};
+  return str.replace(/^[#\s]+/, '').trim().toUpperCase();
+}
+
+// Distinct tab instance player ID so multiple tabs in the same browser can test multiplayer side-by-side
+const TAB_INSTANCE_ID = `p_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+const getTabPlayerId = () => TAB_INSTANCE_ID;
 
 export default function App() {
   // Socket connection
@@ -112,6 +123,12 @@ export default function App() {
 
   // UI Modals
   const [showRegistration, setShowRegistration] = useState<boolean>(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (p.get('room')) return false;
+    } catch {
+      // ignore
+    }
     return !localStorage.getItem(LOCAL_STORAGE_KEY);
   });
   const [showSkinsModal, setShowSkinsModal] = useState<boolean>(false);
@@ -296,19 +313,33 @@ export default function App() {
     };
   }, []);
 
+  // Pending room join queue (for direct URL invites or clicks while connecting)
+  const pendingJoinRoomRef = useRef<string | null>(null);
+
   // Auto-join from URL parameter (e.g. ?room=ROOM-1234 or ?room=VIP88)
   useEffect(() => {
-    if (!socketConnected) return;
     try {
       const params = new URLSearchParams(window.location.search);
       const roomParam = params.get('room');
-      if (roomParam && !activeRoom) {
-        handleJoinRoom(roomParam);
+      if (roomParam) {
+        const clean = extractRoomCode(roomParam);
+        if (clean) {
+          pendingJoinRoomRef.current = clean;
+        }
       }
     } catch {
       // ignore
     }
-  }, [socketConnected]);
+  }, []);
+
+  // When socket connects or activeRoom clears, process any pending room join
+  useEffect(() => {
+    if (socketConnected && pendingJoinRoomRef.current && !activeRoom) {
+      const target = pendingJoinRoomRef.current;
+      pendingJoinRoomRef.current = null;
+      handleJoinRoom(target);
+    }
+  }, [socketConnected, activeRoom]);
 
   // Milestone detection for both online multiplayer and local offline play
   const triggeredMilestonesRef = useRef<Set<string>>(new Set());
@@ -395,7 +426,7 @@ export default function App() {
     maxPlayers: number = 4
   ) => {
     const tabPlayerId = getTabPlayerId();
-    if (socketConnected && socketRef.current) {
+    if (socketRef.current) {
       socketRef.current.emit('create_room', {
         roomName,
         timerDuration,
@@ -426,11 +457,15 @@ export default function App() {
   };
 
   const handleJoinRoom = (roomId: string) => {
-    const cleanId = roomId.trim().toUpperCase();
+    const cleanId = extractRoomCode(roomId);
     if (!cleanId) return;
 
     const tabPlayerId = getTabPlayerId();
-    if (socketConnected && socketRef.current) {
+    if (socketRef.current) {
+      if (!socketConnected) {
+        pendingJoinRoomRef.current = cleanId;
+        setStatusMessage(`Connecting to server to join room ${cleanId}...`);
+      }
       socketRef.current.emit('join_room', {
         roomId: cleanId,
         player: {
@@ -440,13 +475,8 @@ export default function App() {
           mathDifficulty: profile.mathDifficulty || 'medium',
         },
       });
-    } else if (localEngineRef.current) {
-      setMyPlayerId('local_human');
-      myPlayerIdRef.current = 'local_human';
-      const room = localEngineRef.current.quickMatch(
-        { username: profile.username, skinId: profile.skinId, mathDifficulty: profile.mathDifficulty || 'medium' }
-      );
-      setActiveRoom(room);
+    } else {
+      setStatusMessage('Multiplayer connection unavailable. Please refresh.');
     }
   };
 
@@ -520,14 +550,10 @@ export default function App() {
     const foundById = activeRoom.players.find((p) => p.id === myPlayerId);
     if (foundById) return foundById.id;
 
-    // 2. Match by tab session player ID
+    // 2. Match by unique tab session player ID
     const tabPlayerId = getTabPlayerId();
     const foundByTabId = activeRoom.players.find((p) => p.id === tabPlayerId);
     if (foundByTabId) return foundByTabId.id;
-
-    // 3. Match by persistent profile id
-    const foundByProfId = activeRoom.players.find((p) => p.id === profile.id);
-    if (foundByProfId) return foundByProfId.id;
 
     // 3. Match by unique username among players
     const matchingHumans = activeRoom.players.filter(
@@ -536,7 +562,7 @@ export default function App() {
     if (matchingHumans.length === 1) return matchingHumans[0].id;
 
     return myPlayerId;
-  }, [activeRoom, isCurrentRoomLocal, profile.id, profile.username, myPlayerId]);
+  }, [activeRoom, isCurrentRoomLocal, profile.username, myPlayerId]);
 
   const currentPlayerInTurn = activeRoom?.players[activeRoom?.currentTurnIndex || 0];
   const isMyTurn = Boolean(currentPlayerInTurn && currentPlayerInTurn.id === myEffectivePlayerId);
