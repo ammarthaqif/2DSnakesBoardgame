@@ -43,7 +43,12 @@ function extractRoomCode(rawCode: string | undefined): string {
     // fallback
   }
 
-  return clean.toUpperCase().replace(/^#/, '').trim();
+  // Remove leading '#' or spaces
+  clean = clean.replace(/^[#\s]+/, '').trim().toUpperCase();
+  // Standardize "ROOM 1234" or "ROOM - 1234" to "ROOM-1234"
+  clean = clean.replace(/^ROOM\s*[-_ ]\s*/i, 'ROOM-');
+
+  return clean;
 }
 
 function findRoomByCode(rawCode: string | undefined): GameRoom | undefined {
@@ -83,13 +88,6 @@ function findRoomByCode(rawCode: string | undefined): GameRoom | undefined {
     }
   }
 
-  // 5. Fallback match by exact room name
-  for (const room of rooms.values()) {
-    if (room.name.trim().toUpperCase() === clean) {
-      return room;
-    }
-  }
-
   return undefined;
 }
 
@@ -118,6 +116,20 @@ async function startServer() {
   // ---------------- REST APIs ----------------
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', activeRooms: rooms.size });
+  });
+
+  app.get('/api/debug/rooms', (req, res) => {
+    const list: any[] = [];
+    rooms.forEach((r, id) => {
+      list.push({
+        id,
+        name: r.name,
+        isPrivate: r.isPrivate,
+        status: r.status,
+        players: r.players.map((p) => ({ id: p.id, username: p.username, connected: p.connected, isHost: p.isHost })),
+      });
+    });
+    res.json(list);
   });
 
   app.get('/api/leaderboard', (req, res) => {
@@ -578,6 +590,20 @@ async function startServer() {
       maxPlayers?: number;
       player: { id?: string; username: string; skinId: string; mathDifficulty?: MathDifficulty };
     }) => {
+      // Clean up previous room if socket was already in one
+      const prevInfo = socketToPlayer.get(socket.id);
+      if (prevInfo && rooms.has(prevInfo.roomId)) {
+        const prevRoom = rooms.get(prevInfo.roomId)!;
+        socket.leave(prevRoom.id);
+        prevRoom.players = prevRoom.players.filter((p) => p.id !== prevInfo.playerId);
+        if (prevRoom.players.filter((p) => !p.isBot).length === 0) {
+          clearRoomTimer(prevRoom.id);
+          rooms.delete(prevRoom.id);
+        } else {
+          io.to(prevRoom.id).emit('room_update', prevRoom);
+        }
+      }
+
       let roomId = '';
 
       // Validate & clean custom code if requested
@@ -606,8 +632,8 @@ async function startServer() {
 
       const hostPlayer: GamePlayer = {
         id: playerId,
-        username: data.player.username || 'SnakeMaster',
-        skinId: data.player.skinId || 'emerald_viper',
+        username: (data.player?.username || '').trim() || 'SnakeMaster',
+        skinId: data.player?.skinId || 'emerald_viper',
         position: 1,
         isBot: false,
         score: 0,
@@ -625,7 +651,7 @@ async function startServer() {
 
       const newRoom: GameRoom = {
         id: roomId,
-        name: data.roomName || `${data.player.username || 'Host'}'s Game`,
+        name: data.roomName || `${hostPlayer.username}'s Game`,
         isTournament: data.isTournament || false,
         timerDuration: data.timerDuration || 10,
         maxPlayers: requestedMaxPlayers,
@@ -637,25 +663,41 @@ async function startServer() {
         actionLog: [],
         winner: null,
         createdAt: Date.now(),
-        isPrivate: data.isPrivate || false,
+        isPrivate: data.isPrivate ?? false,
         extraTurnAwarded: false,
       };
 
-      addLog(newRoom, `${hostPlayer.username} created custom room [${roomId}].`, 'info', hostPlayer);
+      addLog(newRoom, `${hostPlayer.username} created room [${roomId}].`, 'info', hostPlayer);
       rooms.set(roomId, newRoom);
       socket.join(roomId);
 
+      console.log(`[server] Created room "${roomId}" (isPrivate=${newRoom.isPrivate}) by ${hostPlayer.username}`);
       socket.emit('joined_room', { roomId, room: newRoom, player: hostPlayer });
       io.emit('lobby_rooms', getPublicRooms());
     });
 
     // Join Room (by code or clicking lobby)
     socket.on('join_room', (data: { roomId: string; player: { id?: string; username: string; skinId: string; mathDifficulty?: MathDifficulty } }) => {
-      const room = findRoomByCode(data.roomId);
-      console.log(`[server] join_room request: "${data.roomId}" -> resolved room:`, room ? room.id : 'NOT FOUND');
+      const cleanTarget = extractRoomCode(data.roomId);
+      const room = findRoomByCode(cleanTarget);
+      console.log(`[server] join_room request: "${data.roomId}" (cleaned: "${cleanTarget}") -> resolved room:`, room ? room.id : 'NOT FOUND');
       if (!room) {
-        socket.emit('error_message', `Room "${data.roomId}" not found. Check the room code or invite link.`);
+        socket.emit('error_message', `Room "${cleanTarget || data.roomId}" not found. Check the room code or invite link.`);
         return;
+      }
+
+      // Clean up previous room if socket was in a different room
+      const prevInfo = socketToPlayer.get(socket.id);
+      if (prevInfo && prevInfo.roomId !== room.id && rooms.has(prevInfo.roomId)) {
+        const prevRoom = rooms.get(prevInfo.roomId)!;
+        socket.leave(prevRoom.id);
+        prevRoom.players = prevRoom.players.filter((p) => p.id !== prevInfo.playerId);
+        if (prevRoom.players.filter((p) => !p.isBot).length === 0) {
+          clearRoomTimer(prevRoom.id);
+          rooms.delete(prevRoom.id);
+        } else {
+          io.to(prevRoom.id).emit('room_update', prevRoom);
+        }
       }
 
       const clientPlayerId = data.player?.id;
@@ -700,7 +742,7 @@ async function startServer() {
 
       // Avoid identical usernames in the same match
       let chosenUsername = (data.player?.username || '').trim() || `Player ${room.players.length + 1}`;
-      const duplicateCount = room.players.filter((p) => p.username.startsWith(chosenUsername)).length;
+      const duplicateCount = room.players.filter((p) => p.username.toLowerCase() === chosenUsername.toLowerCase()).length;
       if (duplicateCount > 0) {
         chosenUsername = `${chosenUsername} #${duplicateCount + 1}`;
       }
@@ -735,6 +777,7 @@ async function startServer() {
       socket.join(room.id);
       addLog(room, `${newPlayer.username} joined the match.`, 'info', newPlayer);
 
+      console.log(`[server] ${newPlayer.username} (${newPlayer.id}) joined room "${room.id}" (total=${room.players.length})`);
       socket.emit('joined_room', { roomId: room.id, room, player: newPlayer });
       io.to(room.id).emit('room_update', room);
       io.emit('lobby_rooms', getPublicRooms());

@@ -59,7 +59,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const [customRoomCode, setCustomRoomCode] = useState('');
   const [newRoomMaxPlayers, setNewRoomMaxPlayers] = useState<2 | 3 | 4>(4);
   const [newRoomTimer, setNewRoomTimer] = useState<5 | 10 | 15>(10);
-  const [isPrivateRoom, setIsPrivateRoom] = useState(false);
+  const [isPrivateRoom, setIsPrivateRoom] = useState(true);
 
   const handleJoinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -71,8 +71,27 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     sounds.playDiceRoll();
-    onCreateRoom(newRoomName, newRoomTimer, isPrivateRoom, false, customRoomCode.trim(), newRoomMaxPlayers);
+    onCreateRoom(
+      newRoomName || `${profile.username}'s Arena`,
+      newRoomTimer,
+      isPrivateRoom,
+      false,
+      customRoomCode.trim(),
+      newRoomMaxPlayers
+    );
     setShowCreateModal(false);
+  };
+
+  const handleInstantPrivateRoom = () => {
+    sounds.playDiceRoll();
+    onCreateRoom(
+      `${profile.username}'s Arena`,
+      10,
+      true,
+      false,
+      undefined,
+      4
+    );
   };
 
   return (
@@ -238,8 +257,11 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
       {/* Custom Room Creation & Join Room Code */}
       <div className="p-4 bg-slate-900/70 rounded-2xl border border-slate-800 space-y-3">
-        <div className="text-xs font-bold uppercase tracking-wider text-slate-300">
-          Private Room with Friends
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-bold uppercase tracking-wider text-slate-300">
+            Private Room with Friends
+          </div>
+          <span className="text-[10px] text-cyan-400 font-bold">2-4 Players</span>
         </div>
 
         {/* Join by code form */}
@@ -247,7 +269,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           <input
             id="room-code-input"
             type="text"
-            placeholder="Room Code or Paste Invite Link"
+            placeholder="Room Code (e.g. 1234 or paste link)"
             value={roomCodeInput}
             onChange={(e) => setRoomCodeInput(e.target.value)}
             className="flex-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-xs font-mono font-bold text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-400 uppercase"
@@ -255,21 +277,35 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           <button
             id="join-room-code-btn"
             type="submit"
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold rounded-xl text-xs flex items-center gap-1 transition-colors"
+            className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1 transition-colors shadow-md shadow-cyan-500/20"
           >
             <LogIn className="w-3.5 h-3.5" />
             <span>Join</span>
           </button>
         </form>
 
-        <button
-          id="create-custom-room-btn"
-          onClick={() => setShowCreateModal(true)}
-          className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors"
-        >
-          <PlusCircle className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Create Custom Room & Select Timer</span>
-        </button>
+        {/* Two room creation options: Instant vs Custom */}
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            id="instant-create-private-room-btn"
+            onClick={handleInstantPrivateRoom}
+            className="py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-800/40 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
+            title="Create instant private room and get share code"
+          >
+            <PlusCircle className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Instant Room</span>
+          </button>
+
+          <button
+            id="create-custom-room-btn"
+            onClick={() => setShowCreateModal(true)}
+            className="py-2.5 px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors"
+            title="Choose custom room code, timer speed, or player limit"
+          >
+            <Clock className="w-3.5 h-3.5 text-amber-400" />
+            <span>Custom Settings</span>
+          </button>
+        </div>
       </div>
 
       {/* How to Play Quick Card */}

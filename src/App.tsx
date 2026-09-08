@@ -72,18 +72,50 @@ export function extractRoomCode(raw: string | undefined): string {
   } catch {
     // fallback
   }
-  return str.replace(/^[#\s]+/, '').trim().toUpperCase();
+  str = str.replace(/^[#\s]+/, '').trim().toUpperCase();
+  str = str.replace(/^ROOM\s*[-_ ]\s*/i, 'ROOM-');
+  return str;
 }
 
 // Distinct tab instance player ID so multiple tabs in the same browser can test multiplayer side-by-side
-const TAB_INSTANCE_ID = `p_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-const getTabPlayerId = () => TAB_INSTANCE_ID;
+export function getTabPlayerId(): string {
+  try {
+    const existing = sessionStorage.getItem('snake_tab_player_id');
+    if (existing) return existing;
+    const newId = `p_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    sessionStorage.setItem('snake_tab_player_id', newId);
+    return newId;
+  } catch {
+    return `p_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  }
+}
 
 export default function App() {
   // Socket connection
   const socketRef = useRef<Socket | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
   const localEngineRef = useRef<LocalGameEngine | null>(null);
+
+  // Track initial room code from URL parameters (?room=ROOM-1234 or ?room=1234)
+  const pendingJoinRoomRef = useRef<string | null>(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      const r = p.get('room');
+      return r ? extractRoomCode(r) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const [pendingTargetRoom, setPendingTargetRoom] = useState<string | null>(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      const r = p.get('room');
+      return r ? extractRoomCode(r) : null;
+    } catch {
+      return null;
+    }
+  });
 
   // Player Profile
   const [profile, setProfile] = useState<PlayerProfile>(() => {
@@ -92,7 +124,7 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (!parsed.id) {
-          parsed.id = `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          parsed.id = getTabPlayerId();
         }
         return parsed;
       }
@@ -101,7 +133,7 @@ export default function App() {
     }
     const randSuffix = Math.floor(100 + Math.random() * 900);
     return {
-      id: `p_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      id: getTabPlayerId(),
       username: `SpeedViper_${randSuffix}`,
       skinId: 'emerald_viper',
       avatarSeed: `seed_${randSuffix}`,
@@ -121,15 +153,14 @@ export default function App() {
     profileRef.current = profile;
   }, [profile]);
 
-  // UI Modals
+  // UI Modals: Prompt user for unique username or guest entry on first visit
   const [showRegistration, setShowRegistration] = useState<boolean>(() => {
     try {
-      const p = new URLSearchParams(window.location.search);
-      if (p.get('room')) return false;
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      return !saved;
     } catch {
-      // ignore
+      return true;
     }
-    return !localStorage.getItem(LOCAL_STORAGE_KEY);
   });
   const [showSkinsModal, setShowSkinsModal] = useState<boolean>(false);
   const [showLeaderboardModal, setShowLeaderboardModal] = useState<boolean>(false);
@@ -313,9 +344,6 @@ export default function App() {
     };
   }, []);
 
-  // Pending room join queue (for direct URL invites or clicks while connecting)
-  const pendingJoinRoomRef = useRef<string | null>(null);
-
   // Auto-join from URL parameter (e.g. ?room=ROOM-1234 or ?room=VIP88)
   useEffect(() => {
     try {
@@ -325,6 +353,7 @@ export default function App() {
         const clean = extractRoomCode(roomParam);
         if (clean) {
           pendingJoinRoomRef.current = clean;
+          setPendingTargetRoom(clean);
         }
       }
     } catch {
@@ -335,9 +364,15 @@ export default function App() {
   // When socket connects or activeRoom clears, process any pending room join
   useEffect(() => {
     if (socketConnected && pendingJoinRoomRef.current && !activeRoom) {
-      const target = pendingJoinRoomRef.current;
-      pendingJoinRoomRef.current = null;
-      handleJoinRoom(target);
+      const hasSavedProfile = Boolean(localStorage.getItem(LOCAL_STORAGE_KEY));
+      if (hasSavedProfile) {
+        const target = pendingJoinRoomRef.current;
+        pendingJoinRoomRef.current = null;
+        setPendingTargetRoom(null);
+        handleJoinRoom(target);
+      } else {
+        setShowRegistration(true);
+      }
     }
   }, [socketConnected, activeRoom]);
 
@@ -382,15 +417,35 @@ export default function App() {
     });
   }, [activeRoom, addMilestoneToast]);
 
-  // Profile Save
-  const handleSaveProfile = (username: string, skinId: string, difficulty: MathDifficulty = 'medium') => {
-    setProfile((prev) => ({
-      ...prev,
+  // Profile Save (Unique Username or Guest)
+  const handleSaveProfile = (
+    username: string,
+    skinId: string,
+    difficulty: MathDifficulty = 'medium',
+    _isGuest: boolean = false
+  ) => {
+    const updatedProfile: PlayerProfile = {
+      ...profile,
       username,
       skinId,
       mathDifficulty: difficulty,
-    }));
+    };
+    setProfile(updatedProfile);
     setShowRegistration(false);
+
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updatedProfile));
+    } catch {
+      // ignore
+    }
+
+    // If there is a pending room from URL or user click, join it now!
+    const targetRoom = pendingTargetRoom || pendingJoinRoomRef.current;
+    if (targetRoom) {
+      pendingJoinRoomRef.current = null;
+      setPendingTargetRoom(null);
+      handleJoinRoom(targetRoom, username);
+    }
   };
 
   // Matchmaking / Room actions
@@ -427,8 +482,13 @@ export default function App() {
   ) => {
     const tabPlayerId = getTabPlayerId();
     if (socketRef.current) {
+      if (!socketConnected) {
+        setStatusMessage('Connecting to game server...');
+      } else {
+        setStatusMessage('Creating room...');
+      }
       socketRef.current.emit('create_room', {
-        roomName,
+        roomName: roomName || `${profile.username}'s Arena`,
         timerDuration,
         isPrivate,
         isTournament,
@@ -456,21 +516,39 @@ export default function App() {
     }
   };
 
-  const handleJoinRoom = (roomId: string) => {
+  const handleJoinRoom = (roomId: string, overrideUsername?: string) => {
     const cleanId = extractRoomCode(roomId);
-    if (!cleanId) return;
+    if (!cleanId) {
+      setStatusMessage('Please enter a valid room code or link.');
+      setTimeout(() => setStatusMessage(''), 3000);
+      return;
+    }
+
+    // If user has not chosen a username or guest profile yet:
+    const hasSavedProfile = Boolean(localStorage.getItem(LOCAL_STORAGE_KEY));
+    if (!hasSavedProfile && !overrideUsername) {
+      pendingJoinRoomRef.current = cleanId;
+      setPendingTargetRoom(cleanId);
+      setShowRegistration(true);
+      return;
+    }
 
     const tabPlayerId = getTabPlayerId();
+    const effectiveUsername = overrideUsername || profile.username;
+
     if (socketRef.current) {
       if (!socketConnected) {
         pendingJoinRoomRef.current = cleanId;
+        setPendingTargetRoom(cleanId);
         setStatusMessage(`Connecting to server to join room ${cleanId}...`);
+      } else {
+        setStatusMessage(`Joining room ${cleanId}...`);
       }
       socketRef.current.emit('join_room', {
         roomId: cleanId,
         player: {
           id: tabPlayerId,
-          username: profile.username,
+          username: effectiveUsername,
           skinId: profile.skinId,
           mathDifficulty: profile.mathDifficulty || 'medium',
         },
@@ -555,14 +633,14 @@ export default function App() {
     const foundByTabId = activeRoom.players.find((p) => p.id === tabPlayerId);
     if (foundByTabId) return foundByTabId.id;
 
-    // 3. Match by unique username among players
-    const matchingHumans = activeRoom.players.filter(
-      (p) => !p.isBot && p.username === profile.username
-    );
-    if (matchingHumans.length === 1) return matchingHumans[0].id;
+    // 3. Match by ref
+    if (myPlayerIdRef.current) {
+      const foundByRef = activeRoom.players.find((p) => p.id === myPlayerIdRef.current);
+      if (foundByRef) return foundByRef.id;
+    }
 
     return myPlayerId;
-  }, [activeRoom, isCurrentRoomLocal, profile.username, myPlayerId]);
+  }, [activeRoom, isCurrentRoomLocal, myPlayerId]);
 
   const currentPlayerInTurn = activeRoom?.players[activeRoom?.currentTurnIndex || 0];
   const isMyTurn = Boolean(currentPlayerInTurn && currentPlayerInTurn.id === myEffectivePlayerId);
@@ -942,14 +1020,22 @@ export default function App() {
         />
       )}
 
-      {/* MODAL 6: Registration / Instant Profile Setup */}
+      {/* MODAL 6: Registration / Username Prompt / Guest Entry */}
       <PlayerRegistrationModal
         initialUsername={profile.username}
         initialSkinId={profile.skinId}
         initialDifficulty={profile.mathDifficulty || 'medium'}
         isOpen={showRegistration}
+        targetRoomCode={pendingTargetRoom || undefined}
         onSave={handleSaveProfile}
-        onClose={() => setShowRegistration(false)}
+        onClose={
+          localStorage.getItem(LOCAL_STORAGE_KEY)
+            ? () => {
+                setShowRegistration(false);
+                setPendingTargetRoom(null);
+              }
+            : undefined
+        }
       />
 
       {/* Milestone Toast Notifications */}
