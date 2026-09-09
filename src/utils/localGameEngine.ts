@@ -7,9 +7,26 @@ export class LocalGameEngine {
   private onUpdate: (room: GameRoom) => void;
   private botTimer: any = null;
   private logCounter: number = 0;
+  private broadcastChannel: BroadcastChannel | null = null;
 
   constructor(onUpdate: (room: GameRoom) => void) {
     this.onUpdate = onUpdate;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        this.broadcastChannel = new BroadcastChannel('snake_game_arena_channel');
+        this.broadcastChannel.onmessage = (event) => {
+          const data = event.data;
+          if (data?.type === 'ROOM_UPDATE' && data.room) {
+            if (this.room && this.room.id === data.room.id) {
+              this.room = data.room;
+              this.onUpdate({ ...this.room, players: this.room.players.map((p) => ({ ...p })) });
+            }
+          }
+        };
+      }
+    } catch {
+      // BroadcastChannel unavailable
+    }
   }
 
   public getRoom(): GameRoom | null {
@@ -43,6 +60,14 @@ export class LocalGameEngine {
 
   private emitUpdate() {
     if (this.room) {
+      try {
+        localStorage.setItem(`snake_local_room_${this.room.id}`, JSON.stringify(this.room));
+        if (this.broadcastChannel) {
+          this.broadcastChannel.postMessage({ type: 'ROOM_UPDATE', room: this.room });
+        }
+      } catch {
+        // storage quota or sandboxed
+      }
       this.onUpdate({ ...this.room, players: this.room.players.map((p) => ({ ...p })) });
     }
   }
@@ -139,7 +164,7 @@ export class LocalGameEngine {
 
     const roomId = customCode && customCode.trim()
       ? customCode.trim().toUpperCase()
-      : `LOCAL-ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
+      : `ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const newRoom: GameRoom = {
       id: roomId,
@@ -557,6 +582,120 @@ export class LocalGameEngine {
   public leaveRoom() {
     this.clearBotTimer();
     this.room = null;
+  }
+
+  public joinRoom(
+    roomId: string,
+    playerProfile: { username: string; skinId: string; mathDifficulty?: MathDifficulty }
+  ): GameRoom | null {
+    const cleanId = roomId.trim().toUpperCase();
+
+    // 1. If this instance already has this room
+    if (this.room && this.room.id.toUpperCase() === cleanId) {
+      const existing = this.room.players.find(
+        (p) => p.username.toLowerCase() === (playerProfile.username || '').toLowerCase()
+      );
+      if (!existing && this.room.players.length < this.room.maxPlayers) {
+        const newPlayer: GamePlayer = {
+          id: `player_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+          username: playerProfile.username || 'Guest',
+          skinId: playerProfile.skinId || 'emerald_viper',
+          position: 1,
+          mathStreak: 0,
+          isBot: false,
+          score: 0,
+          consecutiveExtraTurns: 0,
+          avatarIndex: this.room.players.length,
+          isHost: false,
+          isReady: true,
+          mathDifficulty: playerProfile.mathDifficulty || 'medium',
+          turnsWithoutMoving: 0,
+        };
+        this.room.players.push(newPlayer);
+        this.addLog(`${newPlayer.username} joined the match`, 'info', newPlayer.id, newPlayer.username);
+        this.emitUpdate();
+      }
+      return this.room;
+    }
+
+    // 2. Check saved room in localStorage
+    try {
+      const saved = localStorage.getItem(`snake_local_room_${cleanId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved) as GameRoom;
+        if (parsed && parsed.status === 'waiting' && parsed.players.length < parsed.maxPlayers) {
+          const newPlayer: GamePlayer = {
+            id: `player_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+            username: playerProfile.username || 'Guest',
+            skinId: playerProfile.skinId || 'emerald_viper',
+            position: 1,
+            mathStreak: 0,
+            isBot: false,
+            score: 0,
+            consecutiveExtraTurns: 0,
+            avatarIndex: parsed.players.length,
+            isHost: false,
+            isReady: true,
+            mathDifficulty: playerProfile.mathDifficulty || 'medium',
+            turnsWithoutMoving: 0,
+          };
+          parsed.players.push(newPlayer);
+          this.room = parsed;
+          this.emitUpdate();
+          return parsed;
+        }
+      }
+    } catch {
+      // fallback
+    }
+
+    // 3. Fallback: Automatically create room session for this code
+    const hostPlayer: GamePlayer = {
+      id: 'local_human',
+      username: playerProfile.username || 'Host',
+      skinId: playerProfile.skinId || 'emerald_viper',
+      position: 1,
+      mathStreak: 0,
+      isBot: false,
+      score: 0,
+      consecutiveExtraTurns: 0,
+      avatarIndex: 0,
+      isHost: true,
+      isReady: true,
+      mathDifficulty: playerProfile.mathDifficulty || 'medium',
+      turnsWithoutMoving: 0,
+    };
+
+    const newRoom: GameRoom = {
+      id: cleanId,
+      name: `${cleanId} Arena`,
+      isPrivate: true,
+      isTournament: false,
+      timerDuration: 10,
+      maxPlayers: 4,
+      players: [hostPlayer],
+      status: 'waiting',
+      currentTurnIndex: 0,
+      diceValue: 1,
+      extraTurnAwarded: false,
+      createdAt: Date.now(),
+      actionLog: [
+        {
+          id: this.createLogId(),
+          playerId: hostPlayer.id,
+          playerName: hostPlayer.username,
+          text: `Joined arena ${cleanId}`,
+          type: 'info',
+          timestamp: Date.now(),
+        },
+      ],
+      activeChallenge: null,
+      winner: null,
+    };
+
+    this.room = newRoom;
+    this.emitUpdate();
+    return newRoom;
   }
 
   private clearBotTimer() {

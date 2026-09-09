@@ -14,6 +14,9 @@ import {
   Clock,
   Swords,
   Sparkles,
+  Server,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { PlayerProfile, TournamentEvent } from '../types';
 import { SnakeSkinAvatar } from './SnakeSkinAvatar';
@@ -141,8 +144,17 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           </div>
         </div>
 
-        {/* Mute and Settings */}
+        {/* Status indicator and audio toggle */}
         <div className="flex items-center gap-1.5">
+          <div
+            id="arena-status-badge"
+            className="px-2.5 py-1 rounded-xl border border-emerald-500/30 bg-emerald-950/40 text-emerald-400 text-[10px] font-bold flex items-center gap-1.5"
+            title="Game Arena Ready"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span>Arena Ready</span>
+          </div>
+
           <button
             id="toggle-audio-btn"
             onClick={onToggleMute}

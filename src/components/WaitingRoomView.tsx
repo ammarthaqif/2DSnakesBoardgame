@@ -130,9 +130,9 @@ export const WaitingRoomView: React.FC<WaitingRoomViewProps> = ({
             </button>
           </div>
         </div>
-        <div className="text-[10px] text-slate-500 flex items-center gap-1">
-          <Wifi className="w-3 h-3 text-emerald-400" />
-          <span>Real-time multiplayer active. Players can join via code or link.</span>
+        <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
+          <Bot className="w-3.5 h-3.5 text-cyan-400" />
+          <span>Arena ready! Add AI bots or invite friends with the code above.</span>
         </div>
       </div>
 

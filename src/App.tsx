@@ -55,6 +55,21 @@ import {
 const LOCAL_STORAGE_KEY = 'snake_boardgame_profile_v1';
 const REGISTRATION_DONE_KEY = 'snake_boardgame_registered_v1';
 
+export function isStaticHostEnvironment(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    const host = window.location.hostname;
+    return (
+      host.endsWith('github.io') ||
+      host.endsWith('gitlab.io') ||
+      host.endsWith('pages.dev') ||
+      window.location.protocol === 'file:'
+    );
+  } catch {
+    return false;
+  }
+}
+
 export type PendingLobbyAction =
   | { type: 'join'; roomId: string }
   | {
@@ -116,9 +131,38 @@ export function getInitialRoomCode(): string | null {
 }
 
 export default function App() {
-  // Socket connection
+  // Socket connection & Server Network Configuration
+  // Automated Socket Connection: connects automatically if backend is available, seamlessly falls back to client engine
   const socketRef = useRef<Socket | null>(null);
   const [socketConnected, setSocketConnected] = useState<boolean>(false);
+  const [statusToast, setStatusToast] = useState<{
+    message: string;
+    type: 'error' | 'info' | 'success';
+  } | null>(null);
+
+  const showStatus = useCallback(
+    (message: string, type: 'error' | 'info' | 'success' = 'info', durationMs: number = 3200) => {
+      setStatusToast({ message, type });
+      if (durationMs > 0) {
+        setTimeout(() => {
+          setStatusToast((prev) => (prev?.message === message ? null : prev));
+        }, durationMs);
+      }
+    },
+    []
+  );
+
+  const setStatusMessage = useCallback(
+    (msg: string) => {
+      if (msg) {
+        showStatus(msg, 'error', 3500);
+      } else {
+        setStatusToast(null);
+      }
+    },
+    [showStatus]
+  );
+
   const localEngineRef = useRef<LocalGameEngine | null>(null);
 
   // Track initial room code from URL parameters (?room=ROOM-1234 or ?room=1234)
@@ -206,7 +250,6 @@ export default function App() {
   const [myPlayerId, setMyPlayerId] = useState<string>('local_human');
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(INITIAL_LEADERBOARD);
   const [tournament, setTournament] = useState<TournamentEvent>(CURRENT_TOURNAMENT);
-  const [statusMessage, setStatusMessage] = useState<string>('');
 
   const activeRoomRef = useRef<GameRoom | null>(activeRoom);
   useEffect(() => {
@@ -254,13 +297,23 @@ export default function App() {
     sounds.setMuted(nextMuted);
   };
 
+  // Automatically resolve backend URL (environment variable or current origin, fallback to local engine if static host)
+  const getBackendBaseUrl = useCallback(() => {
+    const envUrl = ((import.meta as any).env?.VITE_GAME_SERVER_URL as string)?.trim().replace(/\/+$/, '');
+    if (envUrl) return envUrl;
+    if (isStaticHostEnvironment()) return '';
+    return typeof window !== 'undefined' ? window.location.origin : '';
+  }, []);
+
   // Fetch initial leaderboard and tournament data
   const fetchLeaderboard = async () => {
     try {
-      const res = await fetch('/api/leaderboard');
+      const base = getBackendBaseUrl();
+      if (!base) return;
+      const res = await fetch(`${base}/api/leaderboard`);
       if (res.ok) {
         const data = await res.json();
-        setLeaderboard(data);
+        if (Array.isArray(data)) setLeaderboard(data);
       }
     } catch {
       // fallback
@@ -269,10 +322,12 @@ export default function App() {
 
   const fetchTournament = async () => {
     try {
-      const res = await fetch('/api/tournaments');
+      const base = getBackendBaseUrl();
+      if (!base) return;
+      const res = await fetch(`${base}/api/tournaments`);
       if (res.ok) {
         const data = await res.json();
-        setTournament(data);
+        if (data && data.title) setTournament(data);
       }
     } catch {
       // fallback
@@ -282,21 +337,28 @@ export default function App() {
   useEffect(() => {
     fetchLeaderboard();
     fetchTournament();
-  }, []);
+  }, [getBackendBaseUrl]);
 
-  // Setup Socket.IO
+  // Automated Socket.IO connection
   useEffect(() => {
-    const socket = io({
+    const base = getBackendBaseUrl();
+    if (!base) {
+      setSocketConnected(false);
+      return;
+    }
+
+    const socket = io(base, {
       transports: ['websocket', 'polling'],
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
+      reconnectionAttempts: 3,
+      reconnectionDelay: 2000,
+      timeout: 3500,
     });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       setSocketConnected(true);
       // Re-sync with server room if user was already in a game/waiting room
-      if (activeRoomRef.current) {
+      if (activeRoomRef.current && !activeRoomRef.current.id.startsWith('LOCAL-')) {
         socket.emit('rejoin_room', {
           roomId: activeRoomRef.current.id,
           player: {
@@ -312,11 +374,15 @@ export default function App() {
       setSocketConnected(false);
     });
 
+    socket.on('connect_error', () => {
+      setSocketConnected(false);
+    });
+
     socket.on('joined_room', (data: { roomId: string; room: GameRoom; player: GamePlayer }) => {
       setActiveRoom(data.room);
       setMyPlayerId(data.player.id);
       myPlayerIdRef.current = data.player.id;
-      setStatusMessage(''); // Clear any joining or connecting status
+      setStatusToast(null);
       sounds.playDiceRoll();
     });
 
@@ -329,24 +395,26 @@ export default function App() {
           updatedRoom.winner.id === myPlayerIdRef.current ||
           updatedRoom.winner.id === profileRef.current.id;
         const currentProf = profileRef.current;
-        // Record on server
-        fetch('/api/leaderboard/record', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: currentProf.username,
-            skinId: currentProf.skinId,
-            won: isMeWinner,
-            mathCorrect: currentProf.mathCorrect,
-            mathTotal: currentProf.mathTotal,
-            seasonPointsEarned: isMeWinner ? 60 : 20,
-          }),
-        })
-          .then((r) => r.json())
-          .then((res) => {
-            if (res.leaderboard) setLeaderboard(res.leaderboard);
+        const serverEndpoint = getBackendBaseUrl();
+        if (serverEndpoint) {
+          fetch(`${serverEndpoint}/api/leaderboard/record`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username: currentProf.username,
+              skinId: currentProf.skinId,
+              won: isMeWinner,
+              mathCorrect: currentProf.mathCorrect,
+              mathTotal: currentProf.mathTotal,
+              seasonPointsEarned: isMeWinner ? 60 : 20,
+            }),
           })
-          .catch(() => {});
+            .then((r) => r.json())
+            .then((res) => {
+              if (res.leaderboard) setLeaderboard(res.leaderboard);
+            })
+            .catch(() => {});
+        }
 
         // Update local stats
         setProfile((prev) => ({
@@ -362,9 +430,8 @@ export default function App() {
     });
 
     socket.on('error_message', (msg: string) => {
-      setStatusMessage(msg);
+      showStatus(msg, 'error', 3500);
       sounds.playWrong();
-      setTimeout(() => setStatusMessage(''), 3500);
     });
 
     socket.on('milestone_unlocked', (toastData: any) => {
@@ -374,7 +441,7 @@ export default function App() {
     return () => {
       socket.disconnect();
     };
-  }, []);
+  }, [getBackendBaseUrl, addMilestoneToast, showStatus]);
 
   // Auto-join from URL parameter (e.g. ?room=ROOM-1234 or ?room=VIP88)
   useEffect(() => {
@@ -504,8 +571,8 @@ export default function App() {
   const doQuickMatch = (isTournament: boolean = false, overrideProfile?: PlayerProfile) => {
     const currentProf = overrideProfile || profile;
     const tabPlayerId = getTabPlayerId();
-    if (socketConnected && socketRef.current) {
-      setStatusMessage('Finding match...');
+    if (socketConnected && socketRef.current?.connected) {
+      showStatus('Finding match...', 'info');
       socketRef.current.emit('quick_match', {
         isTournament,
         player: {
@@ -527,6 +594,8 @@ export default function App() {
         isTournament
       );
       setActiveRoom(room);
+      sounds.playDiceRoll();
+      showStatus('Matched! Game is starting...', 'success', 2500);
     }
   };
 
@@ -550,12 +619,9 @@ export default function App() {
   ) => {
     const currentProf = overrideProfile || profile;
     const tabPlayerId = getTabPlayerId();
-    if (socketRef.current) {
-      if (!socketConnected) {
-        setStatusMessage('Connecting to game server...');
-      } else {
-        setStatusMessage('Creating room...');
-      }
+
+    if (socketConnected && socketRef.current?.connected) {
+      showStatus('Creating room...', 'info');
       socketRef.current.emit('create_room', {
         roomName: roomName || `${currentProf.username}'s Arena`,
         timerDuration,
@@ -574,7 +640,7 @@ export default function App() {
       setMyPlayerId('local_human');
       myPlayerIdRef.current = 'local_human';
       const room = localEngineRef.current.createRoom(
-        roomName,
+        roomName || `${currentProf.username}'s Arena`,
         timerDuration,
         isPrivate,
         isTournament,
@@ -584,9 +650,17 @@ export default function App() {
           mathDifficulty: currentProf.mathDifficulty || 'medium',
         },
         maxPlayers,
-        customCode
+        customCode?.trim() || undefined
       );
       setActiveRoom(room);
+      sounds.playDiceRoll();
+      showStatus(
+        isPrivate
+          ? 'Instant Room created! Add AI bots or start when ready.'
+          : 'Room created! Ready to play.',
+        'success',
+        2500
+      );
     }
   };
 
@@ -617,8 +691,7 @@ export default function App() {
   const handleJoinRoom = (roomId: string, overrideProfile?: Partial<PlayerProfile>) => {
     const cleanId = extractRoomCode(roomId);
     if (!cleanId) {
-      setStatusMessage('Please enter a valid room code or link.');
-      setTimeout(() => setStatusMessage(''), 3000);
+      showStatus('Please enter a valid room code or link.', 'error', 3000);
       return;
     }
 
@@ -636,14 +709,8 @@ export default function App() {
     const effectiveSkinId = overrideProfile?.skinId || profile.skinId;
     const effectiveDifficulty = overrideProfile?.mathDifficulty || profile.mathDifficulty || 'medium';
 
-    if (socketRef.current) {
-      if (!socketConnected) {
-        pendingJoinRoomRef.current = cleanId;
-        setPendingTargetRoom(cleanId);
-        setStatusMessage(`Connecting to server to join room ${cleanId}...`);
-      } else {
-        setStatusMessage(`Joining room ${cleanId}...`);
-      }
+    if (socketConnected && socketRef.current?.connected) {
+      showStatus(`Joining room ${cleanId}...`, 'info');
       socketRef.current.emit('join_room', {
         roomId: cleanId,
         player: {
@@ -663,12 +730,9 @@ export default function App() {
       });
       if (room) {
         setActiveRoom(room);
-      } else {
-        setStatusMessage(`Room "${cleanId}" not found in local offline mode.`);
-        setTimeout(() => setStatusMessage(''), 3500);
+        sounds.playDiceRoll();
+        showStatus(`Joined room ${cleanId}!`, 'success', 2500);
       }
-    } else {
-      setStatusMessage('Multiplayer connection unavailable. Please refresh.');
     }
   };
 
@@ -686,51 +750,12 @@ export default function App() {
     return () => clearTimeout(safetyTimer);
   }, [activeRoom?.activeChallenge?.id]);
 
-  const handleStartGame = () => {
-    if (isCurrentRoomLocal) {
-      if (localEngineRef.current) localEngineRef.current.startGame();
-    } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('start_game', {
-        roomId: activeRoom.id,
-        playerId: myEffectivePlayerId,
-      });
-    } else if (localEngineRef.current) {
-      localEngineRef.current.startGame();
-    }
-  };
-
-  const handleAddBot = () => {
-    if (isCurrentRoomLocal) {
-      if (localEngineRef.current) localEngineRef.current.addBot();
-    } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('add_bot', {
-        roomId: activeRoom.id,
-        playerId: myEffectivePlayerId,
-      });
-    } else if (localEngineRef.current) {
-      localEngineRef.current.addBot();
-    }
-  };
-
-  const handleLeaveRoom = () => {
-    if (isCurrentRoomLocal) {
-      if (localEngineRef.current) localEngineRef.current.leaveRoom();
-    } else if (socketConnected && socketRef.current && activeRoom) {
-      socketRef.current.emit('leave_room', {
-        roomId: activeRoom.id,
-        playerId: myEffectivePlayerId,
-      });
-    } else if (localEngineRef.current) {
-      localEngineRef.current.leaveRoom();
-    }
-    setActiveRoom(null);
-  };
-
   // Helper variables for current match
   const isCurrentRoomLocal = Boolean(
     activeRoom && (
       activeRoom.id.startsWith('LOCAL-') ||
-      activeRoom.players.some((p) => p.id === 'local_human')
+      activeRoom.players.some((p) => p.id === 'local_human') ||
+      !socketConnected
     )
   );
 
@@ -755,6 +780,40 @@ export default function App() {
 
     return myPlayerId;
   }, [activeRoom, isCurrentRoomLocal, myPlayerId]);
+
+  const handleStartGame = () => {
+    if (isCurrentRoomLocal || !socketConnected) {
+      if (localEngineRef.current) localEngineRef.current.startGame();
+    } else if (socketConnected && socketRef.current && activeRoom) {
+      socketRef.current.emit('start_game', {
+        roomId: activeRoom.id,
+        playerId: myEffectivePlayerId,
+      });
+    }
+  };
+
+  const handleAddBot = () => {
+    if (isCurrentRoomLocal || !socketConnected) {
+      if (localEngineRef.current) localEngineRef.current.addBot();
+    } else if (socketConnected && socketRef.current && activeRoom) {
+      socketRef.current.emit('add_bot', {
+        roomId: activeRoom.id,
+        playerId: myEffectivePlayerId,
+      });
+    }
+  };
+
+  const handleLeaveRoom = () => {
+    if (isCurrentRoomLocal || !socketConnected) {
+      if (localEngineRef.current) localEngineRef.current.leaveRoom();
+    } else if (socketConnected && socketRef.current && activeRoom) {
+      socketRef.current.emit('leave_room', {
+        roomId: activeRoom.id,
+        playerId: myEffectivePlayerId,
+      });
+    }
+    setActiveRoom(null);
+  };
 
   const currentPlayerInTurn = activeRoom?.players[activeRoom?.currentTurnIndex || 0];
   const isMyTurn = Boolean(currentPlayerInTurn && currentPlayerInTurn.id === myEffectivePlayerId);
@@ -893,9 +952,17 @@ export default function App() {
       className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-start p-2 sm:p-4 overflow-x-hidden"
     >
       {/* Top Banner Status (if any) */}
-      {statusMessage && (
-        <div className="fixed top-3 z-50 px-4 py-2 bg-rose-600 text-white font-bold text-xs rounded-xl shadow-lg animate-bounce">
-          {statusMessage}
+      {statusToast && (
+        <div
+          className={`fixed top-3 z-50 px-4 py-2 text-xs font-bold rounded-xl shadow-xl border flex items-center gap-2 transition-all ${
+            statusToast.type === 'error'
+              ? 'bg-rose-950/90 text-rose-200 border-rose-500/60'
+              : statusToast.type === 'success'
+              ? 'bg-emerald-950/90 text-emerald-200 border-emerald-500/60'
+              : 'bg-cyan-950/90 text-cyan-200 border-cyan-500/60'
+          }`}
+        >
+          <span>{statusToast.message}</span>
         </div>
       )}
 
@@ -919,23 +986,11 @@ export default function App() {
               </div>
               <div className="flex items-center gap-2">
                 <div
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all ${
-                    socketConnected
-                      ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
-                      : 'bg-cyan-950/60 border-cyan-500/40 text-cyan-300'
-                  }`}
-                  title={
-                    socketConnected
-                      ? 'Connected to live game server'
-                      : 'Running in zero-config standalone mode (ideal for GitHub Pages)'
-                  }
+                  id="multiplayer-status-badge"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold border border-emerald-500/30 bg-emerald-950/40 text-emerald-300"
                 >
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      socketConnected ? 'bg-emerald-400 animate-pulse' : 'bg-cyan-400'
-                    }`}
-                  />
-                  <span>{socketConnected ? 'Multiplayer Online' : 'GitHub Pages Ready'}</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>{socketConnected ? 'Live Multiplayer' : 'Game Arena Ready'}</span>
                 </div>
               </div>
             </div>
@@ -1156,6 +1211,8 @@ export default function App() {
             : undefined
         }
       />
+
+
 
       {/* Milestone Toast Notifications */}
       <MilestoneToastContainer
