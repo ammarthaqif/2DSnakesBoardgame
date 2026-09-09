@@ -117,7 +117,8 @@ export class LocalGameEngine {
     isPrivate: boolean,
     isTournament: boolean,
     playerProfile: { username: string; skinId: string; mathDifficulty?: MathDifficulty },
-    maxPlayers: number = 4
+    maxPlayers: number = 4,
+    customCode?: string
   ): GameRoom {
     this.clearBotTimer();
     const humanPlayer: GamePlayer = {
@@ -136,8 +137,12 @@ export class LocalGameEngine {
       turnsWithoutMoving: 0,
     };
 
+    const roomId = customCode && customCode.trim()
+      ? customCode.trim().toUpperCase()
+      : `LOCAL-ROOM-${Math.floor(1000 + Math.random() * 9000)}`;
+
     const newRoom: GameRoom = {
-      id: `LOCAL-ROOM-${Math.floor(1000 + Math.random() * 9000)}`,
+      id: roomId,
       name: roomName || 'Custom Arena',
       isPrivate,
       isTournament,

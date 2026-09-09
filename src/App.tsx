@@ -53,6 +53,20 @@ import {
 } from 'lucide-react';
 
 const LOCAL_STORAGE_KEY = 'snake_boardgame_profile_v1';
+const REGISTRATION_DONE_KEY = 'snake_boardgame_registered_v1';
+
+export type PendingLobbyAction =
+  | { type: 'join'; roomId: string }
+  | {
+      type: 'create';
+      roomName: string;
+      timerDuration: 5 | 10 | 15;
+      isPrivate: boolean;
+      isTournament: boolean;
+      customCode?: string;
+      maxPlayers: number;
+    }
+  | { type: 'quick'; isTournament: boolean };
 
 // Robust helper to extract clean room code from text, invite link URL, or query parameter
 export function extractRoomCode(raw: string | undefined): string {
@@ -90,6 +104,17 @@ export function getTabPlayerId(): string {
   }
 }
 
+export function getInitialRoomCode(): string | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    const p = new URLSearchParams(window.location.search);
+    const r = p.get('room');
+    return r ? extractRoomCode(r) : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   // Socket connection
   const socketRef = useRef<Socket | null>(null);
@@ -97,25 +122,9 @@ export default function App() {
   const localEngineRef = useRef<LocalGameEngine | null>(null);
 
   // Track initial room code from URL parameters (?room=ROOM-1234 or ?room=1234)
-  const pendingJoinRoomRef = useRef<string | null>(() => {
-    try {
-      const p = new URLSearchParams(window.location.search);
-      const r = p.get('room');
-      return r ? extractRoomCode(r) : null;
-    } catch {
-      return null;
-    }
-  })();
-
-  const [pendingTargetRoom, setPendingTargetRoom] = useState<string | null>(() => {
-    try {
-      const p = new URLSearchParams(window.location.search);
-      const r = p.get('room');
-      return r ? extractRoomCode(r) : null;
-    } catch {
-      return null;
-    }
-  });
+  const initialRoom = useMemo(() => getInitialRoomCode(), []);
+  const pendingJoinRoomRef = useRef<string | null>(initialRoom);
+  const [pendingTargetRoom, setPendingTargetRoom] = useState<string | null>(initialRoom);
 
   // Player Profile
   const [profile, setProfile] = useState<PlayerProfile>(() => {
@@ -153,11 +162,20 @@ export default function App() {
     profileRef.current = profile;
   }, [profile]);
 
+  const pendingActionRef = useRef<PendingLobbyAction | null>(null);
+
+  const [isRegistered, setIsRegistered] = useState<boolean>(() => {
+    try {
+      return Boolean(localStorage.getItem(REGISTRATION_DONE_KEY));
+    } catch {
+      return false;
+    }
+  });
+
   // UI Modals: Prompt user for unique username or guest entry on first visit
   const [showRegistration, setShowRegistration] = useState<boolean>(() => {
     try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      return !saved;
+      return !Boolean(localStorage.getItem(REGISTRATION_DONE_KEY));
     } catch {
       return true;
     }
@@ -249,8 +267,21 @@ export default function App() {
     }
   };
 
+  const fetchTournament = async () => {
+    try {
+      const res = await fetch('/api/tournaments');
+      if (res.ok) {
+        const data = await res.json();
+        setTournament(data);
+      }
+    } catch {
+      // fallback
+    }
+  };
+
   useEffect(() => {
     fetchLeaderboard();
+    fetchTournament();
   }, []);
 
   // Setup Socket.IO
@@ -285,6 +316,7 @@ export default function App() {
       setActiveRoom(data.room);
       setMyPlayerId(data.player.id);
       myPlayerIdRef.current = data.player.id;
+      setStatusMessage(''); // Clear any joining or connecting status
       sounds.playDiceRoll();
     });
 
@@ -364,8 +396,7 @@ export default function App() {
   // When socket connects or activeRoom clears, process any pending room join
   useEffect(() => {
     if (socketConnected && pendingJoinRoomRef.current && !activeRoom) {
-      const hasSavedProfile = Boolean(localStorage.getItem(LOCAL_STORAGE_KEY));
-      if (hasSavedProfile) {
+      if (isRegistered) {
         const target = pendingJoinRoomRef.current;
         pendingJoinRoomRef.current = null;
         setPendingTargetRoom(null);
@@ -374,7 +405,7 @@ export default function App() {
         setShowRegistration(true);
       }
     }
-  }, [socketConnected, activeRoom]);
+  }, [socketConnected, activeRoom, isRegistered]);
 
   // Milestone detection for both online multiplayer and local offline play
   const triggeredMilestonesRef = useRef<Set<string>>(new Set());
@@ -431,42 +462,129 @@ export default function App() {
       mathDifficulty: difficulty,
     };
     setProfile(updatedProfile);
+    setIsRegistered(true);
     setShowRegistration(false);
 
     try {
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(updatedProfile));
+      localStorage.setItem(REGISTRATION_DONE_KEY, 'true');
     } catch {
       // ignore
     }
 
-    // If there is a pending room from URL or user click, join it now!
-    const targetRoom = pendingTargetRoom || pendingJoinRoomRef.current;
-    if (targetRoom) {
-      pendingJoinRoomRef.current = null;
-      setPendingTargetRoom(null);
-      handleJoinRoom(targetRoom, username);
+    // Process any pending action
+    const action = pendingActionRef.current;
+    pendingActionRef.current = null;
+    const pendingTarget = pendingTargetRoom || pendingJoinRoomRef.current;
+    pendingJoinRoomRef.current = null;
+    setPendingTargetRoom(null);
+
+    if (action) {
+      if (action.type === 'join') {
+        handleJoinRoom(action.roomId, updatedProfile);
+      } else if (action.type === 'create') {
+        doCreateRoom(
+          action.roomName,
+          action.timerDuration,
+          action.isPrivate,
+          action.isTournament,
+          action.customCode,
+          action.maxPlayers,
+          updatedProfile
+        );
+      } else if (action.type === 'quick') {
+        doQuickMatch(action.isTournament, updatedProfile);
+      }
+    } else if (pendingTarget) {
+      handleJoinRoom(pendingTarget, updatedProfile);
     }
   };
 
   // Matchmaking / Room actions
-  const handleQuickMatch = (isTournament: boolean = false) => {
+  const doQuickMatch = (isTournament: boolean = false, overrideProfile?: PlayerProfile) => {
+    const currentProf = overrideProfile || profile;
     const tabPlayerId = getTabPlayerId();
     if (socketConnected && socketRef.current) {
+      setStatusMessage('Finding match...');
       socketRef.current.emit('quick_match', {
         isTournament,
         player: {
           id: tabPlayerId,
-          username: profile.username,
-          skinId: profile.skinId,
-          mathDifficulty: profile.mathDifficulty || 'medium',
+          username: currentProf.username,
+          skinId: currentProf.skinId,
+          mathDifficulty: currentProf.mathDifficulty || 'medium',
         },
       });
     } else if (localEngineRef.current) {
       setMyPlayerId('local_human');
       myPlayerIdRef.current = 'local_human';
       const room = localEngineRef.current.quickMatch(
-        { username: profile.username, skinId: profile.skinId, mathDifficulty: profile.mathDifficulty || 'medium' },
+        {
+          username: currentProf.username,
+          skinId: currentProf.skinId,
+          mathDifficulty: currentProf.mathDifficulty || 'medium',
+        },
         isTournament
+      );
+      setActiveRoom(room);
+    }
+  };
+
+  const handleQuickMatch = (isTournament: boolean = false) => {
+    if (!isRegistered) {
+      pendingActionRef.current = { type: 'quick', isTournament };
+      setShowRegistration(true);
+      return;
+    }
+    doQuickMatch(isTournament);
+  };
+
+  const doCreateRoom = (
+    roomName: string,
+    timerDuration: 5 | 10 | 15,
+    isPrivate: boolean,
+    isTournament: boolean,
+    customCode?: string,
+    maxPlayers: number = 4,
+    overrideProfile?: PlayerProfile
+  ) => {
+    const currentProf = overrideProfile || profile;
+    const tabPlayerId = getTabPlayerId();
+    if (socketRef.current) {
+      if (!socketConnected) {
+        setStatusMessage('Connecting to game server...');
+      } else {
+        setStatusMessage('Creating room...');
+      }
+      socketRef.current.emit('create_room', {
+        roomName: roomName || `${currentProf.username}'s Arena`,
+        timerDuration,
+        isPrivate,
+        isTournament,
+        customCode: customCode?.trim() || undefined,
+        maxPlayers,
+        player: {
+          id: tabPlayerId,
+          username: currentProf.username,
+          skinId: currentProf.skinId,
+          mathDifficulty: currentProf.mathDifficulty || 'medium',
+        },
+      });
+    } else if (localEngineRef.current) {
+      setMyPlayerId('local_human');
+      myPlayerIdRef.current = 'local_human';
+      const room = localEngineRef.current.createRoom(
+        roomName,
+        timerDuration,
+        isPrivate,
+        isTournament,
+        {
+          username: currentProf.username,
+          skinId: currentProf.skinId,
+          mathDifficulty: currentProf.mathDifficulty || 'medium',
+        },
+        maxPlayers,
+        customCode
       );
       setActiveRoom(room);
     }
@@ -480,43 +598,23 @@ export default function App() {
     customCode?: string,
     maxPlayers: number = 4
   ) => {
-    const tabPlayerId = getTabPlayerId();
-    if (socketRef.current) {
-      if (!socketConnected) {
-        setStatusMessage('Connecting to game server...');
-      } else {
-        setStatusMessage('Creating room...');
-      }
-      socketRef.current.emit('create_room', {
-        roomName: roomName || `${profile.username}'s Arena`,
-        timerDuration,
-        isPrivate,
-        isTournament,
-        customCode: customCode?.trim() || undefined,
-        maxPlayers,
-        player: {
-          id: tabPlayerId,
-          username: profile.username,
-          skinId: profile.skinId,
-          mathDifficulty: profile.mathDifficulty || 'medium',
-        },
-      });
-    } else if (localEngineRef.current) {
-      setMyPlayerId('local_human');
-      myPlayerIdRef.current = 'local_human';
-      const room = localEngineRef.current.createRoom(
+    if (!isRegistered) {
+      pendingActionRef.current = {
+        type: 'create',
         roomName,
         timerDuration,
         isPrivate,
         isTournament,
-        { username: profile.username, skinId: profile.skinId, mathDifficulty: profile.mathDifficulty || 'medium' },
-        maxPlayers
-      );
-      setActiveRoom(room);
+        customCode,
+        maxPlayers,
+      };
+      setShowRegistration(true);
+      return;
     }
+    doCreateRoom(roomName, timerDuration, isPrivate, isTournament, customCode, maxPlayers);
   };
 
-  const handleJoinRoom = (roomId: string, overrideUsername?: string) => {
+  const handleJoinRoom = (roomId: string, overrideProfile?: Partial<PlayerProfile>) => {
     const cleanId = extractRoomCode(roomId);
     if (!cleanId) {
       setStatusMessage('Please enter a valid room code or link.');
@@ -525,8 +623,8 @@ export default function App() {
     }
 
     // If user has not chosen a username or guest profile yet:
-    const hasSavedProfile = Boolean(localStorage.getItem(LOCAL_STORAGE_KEY));
-    if (!hasSavedProfile && !overrideUsername) {
+    if (!isRegistered && !overrideProfile) {
+      pendingActionRef.current = { type: 'join', roomId: cleanId };
       pendingJoinRoomRef.current = cleanId;
       setPendingTargetRoom(cleanId);
       setShowRegistration(true);
@@ -534,7 +632,9 @@ export default function App() {
     }
 
     const tabPlayerId = getTabPlayerId();
-    const effectiveUsername = overrideUsername || profile.username;
+    const effectiveUsername = overrideProfile?.username || profile.username;
+    const effectiveSkinId = overrideProfile?.skinId || profile.skinId;
+    const effectiveDifficulty = overrideProfile?.mathDifficulty || profile.mathDifficulty || 'medium';
 
     if (socketRef.current) {
       if (!socketConnected) {
@@ -549,10 +649,24 @@ export default function App() {
         player: {
           id: tabPlayerId,
           username: effectiveUsername,
-          skinId: profile.skinId,
-          mathDifficulty: profile.mathDifficulty || 'medium',
+          skinId: effectiveSkinId,
+          mathDifficulty: effectiveDifficulty,
         },
       });
+    } else if (localEngineRef.current) {
+      setMyPlayerId('local_human');
+      myPlayerIdRef.current = 'local_human';
+      const room = localEngineRef.current.joinRoom(cleanId, {
+        username: effectiveUsername,
+        skinId: effectiveSkinId,
+        mathDifficulty: effectiveDifficulty,
+      });
+      if (room) {
+        setActiveRoom(room);
+      } else {
+        setStatusMessage(`Room "${cleanId}" not found in local offline mode.`);
+        setTimeout(() => setStatusMessage(''), 3500);
+      }
     } else {
       setStatusMessage('Multiplayer connection unavailable. Please refresh.');
     }
@@ -890,8 +1004,12 @@ export default function App() {
                   isAnsweringMath={Boolean(activeRoom.activeChallenge)}
                   turnKey={`${activeRoom.currentTurnIndex}-${activeRoom.status}-${activeRoom.activeChallenge?.id || 'idle'}`}
                   onTimeout={() => {
-                    if (isMyTurn && activeRoom.activeChallenge) {
-                      handleMathTimeout();
+                    if (isMyTurn) {
+                      if (activeRoom.activeChallenge) {
+                        handleMathTimeout();
+                      } else {
+                        handleRollDice();
+                      }
                     }
                   }}
                 />
@@ -1029,10 +1147,11 @@ export default function App() {
         targetRoomCode={pendingTargetRoom || undefined}
         onSave={handleSaveProfile}
         onClose={
-          localStorage.getItem(LOCAL_STORAGE_KEY)
+          isRegistered
             ? () => {
                 setShowRegistration(false);
                 setPendingTargetRoom(null);
+                pendingActionRef.current = null;
               }
             : undefined
         }

@@ -184,6 +184,16 @@ async function startServer() {
     res.json(currentTournament);
   });
 
+  // Alias for singular /api/tournament
+  app.get('/api/tournament', (req, res) => {
+    res.json(currentTournament);
+  });
+
+  // API endpoint for listing available public rooms
+  app.get('/api/rooms', (req, res) => {
+    res.json(getPublicRooms());
+  });
+
   // Helper to get sanitized room list
   function getPublicRooms() {
     return Array.from(rooms.values())
@@ -1160,6 +1170,11 @@ async function startServer() {
 
       io.emit('lobby_rooms', getPublicRooms());
     });
+  });
+
+  // Return JSON 404 for any unmatched /api requests to avoid SPA HTML fallthrough
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `Not found: ${req.method} ${req.path}` });
   });
 
   // ---------------- Vite Middleware ----------------
