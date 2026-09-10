@@ -72,10 +72,10 @@ export class LocalGameEngine {
     }
   }
 
-  public quickMatch(playerProfile: { username: string; skinId: string; mathDifficulty?: MathDifficulty }, isTournament: boolean = false): GameRoom {
+  public quickMatch(playerProfile: { id?: string; username: string; skinId: string; mathDifficulty?: MathDifficulty }, isTournament: boolean = false): GameRoom {
     this.clearBotTimer();
     const humanPlayer: GamePlayer = {
-      id: 'local_human',
+      id: playerProfile.id || 'local_human',
       username: playerProfile.username || 'SpeedViper',
       skinId: playerProfile.skinId || 'emerald_viper',
       position: 1,
@@ -141,13 +141,13 @@ export class LocalGameEngine {
     timerDuration: 5 | 10 | 15,
     isPrivate: boolean,
     isTournament: boolean,
-    playerProfile: { username: string; skinId: string; mathDifficulty?: MathDifficulty },
+    playerProfile: { id?: string; username: string; skinId: string; mathDifficulty?: MathDifficulty },
     maxPlayers: number = 4,
     customCode?: string
   ): GameRoom {
     this.clearBotTimer();
     const humanPlayer: GamePlayer = {
-      id: 'local_human',
+      id: playerProfile.id || 'local_human',
       username: playerProfile.username || 'Host',
       skinId: playerProfile.skinId || 'emerald_viper',
       position: 1,
@@ -196,6 +196,23 @@ export class LocalGameEngine {
     this.room = newRoom;
     this.emitUpdate();
     return newRoom;
+  }
+
+  public addExternalPlayer(player: GamePlayer): boolean {
+    if (!this.room) return false;
+    const existingIndex = this.room.players.findIndex((p) => p.id === player.id);
+    if (existingIndex >= 0) {
+      this.room.players[existingIndex].connected = true;
+      this.emitUpdate();
+      return true;
+    }
+    if (this.room.players.length >= this.room.maxPlayers) {
+      return false;
+    }
+    this.room.players.push(player);
+    this.addLog(`${player.username} joined the match!`, 'info', player.id, player.username);
+    this.emitUpdate();
+    return true;
   }
 
   public addBot(difficulty?: MathDifficulty) {

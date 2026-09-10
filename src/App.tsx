@@ -37,6 +37,7 @@ import { TurnCountdownTimer } from './components/TurnCountdownTimer';
 import { InGamePlayersBar } from './components/InGamePlayersBar';
 import { MilestoneToastContainer } from './components/MilestoneToastContainer';
 import { LocalGameEngine } from './utils/localGameEngine';
+import { P2PGameEngine } from './utils/p2pGameEngine';
 import { motion } from 'motion/react';
 import {
   Trophy,
@@ -63,6 +64,8 @@ export function isStaticHostEnvironment(): boolean {
       host.endsWith('github.io') ||
       host.endsWith('gitlab.io') ||
       host.endsWith('pages.dev') ||
+      host.endsWith('vercel.app') ||
+      host.endsWith('now.sh') ||
       window.location.protocol === 'file:'
     );
   } catch {
@@ -103,6 +106,10 @@ export function extractRoomCode(raw: string | undefined): string {
   }
   str = str.replace(/^[#\s]+/, '').trim().toUpperCase();
   str = str.replace(/^ROOM\s*[-_ ]\s*/i, 'ROOM-');
+  // If user entered only 3 to 6 digits (e.g. "4821"), format consistently as "ROOM-4821"
+  if (/^\d{3,6}$/.test(str)) {
+    str = `ROOM-${str}`;
+  }
   return str;
 }
 
@@ -124,7 +131,15 @@ export function getInitialRoomCode(): string | null {
     if (typeof window === 'undefined') return null;
     const p = new URLSearchParams(window.location.search);
     const r = p.get('room');
-    return r ? extractRoomCode(r) : null;
+    if (r) return extractRoomCode(r);
+    // Also check window.location.hash for #room=ROOM-1234 or #ROOM-1234
+    if (window.location.hash) {
+      const hashMatch = window.location.hash.match(/(?:room=|^#)([^&]+)/i);
+      if (hashMatch && hashMatch[1]) {
+        return extractRoomCode(hashMatch[1]);
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -163,7 +178,7 @@ export default function App() {
     [showStatus]
   );
 
-  const localEngineRef = useRef<LocalGameEngine | null>(null);
+  const p2pEngineRef = useRef<P2PGameEngine | null>(null);
 
   // Track initial room code from URL parameters (?room=ROOM-1234 or ?room=1234)
   const initialRoom = useMemo(() => getInitialRoomCode(), []);
@@ -261,25 +276,37 @@ export default function App() {
     myPlayerIdRef.current = myPlayerId;
   }, [myPlayerId]);
 
-  // Initialize Local Game Engine fallback for GitHub Pages & offline play
+  // Initialize P2P Game Engine for Vercel, GitHub Pages, WebRTC & offline multi-tab play
   useEffect(() => {
-    localEngineRef.current = new LocalGameEngine((updatedRoom) => {
-      setActiveRoom(updatedRoom);
+    p2pEngineRef.current = new P2PGameEngine(
+      (updatedRoom) => {
+        setActiveRoom(updatedRoom);
 
-      if (updatedRoom.winner && updatedRoom.status === 'game_over') {
-        const isMeWinner = updatedRoom.winner.id === 'local_human';
-        setProfile((prev) => ({
-          ...prev,
-          matchesPlayed: prev.matchesPlayed + 1,
-          matchesWon: isMeWinner ? prev.matchesWon + 1 : prev.matchesWon,
-          trophies: isMeWinner ? prev.trophies + 25 : prev.trophies + 5,
-          seasonPoints: prev.seasonPoints + (isMeWinner ? (updatedRoom.isTournament ? 60 : 40) : 15),
-          xp: prev.xp + 50,
-          level: Math.floor((prev.xp + 50) / 100) + 1,
-        }));
+        if (updatedRoom.winner && updatedRoom.status === 'game_over') {
+          const isMeWinner =
+            updatedRoom.winner.id === myPlayerIdRef.current ||
+            updatedRoom.winner.id === profileRef.current.id ||
+            updatedRoom.winner.id === 'local_human';
+          setProfile((prev) => ({
+            ...prev,
+            matchesPlayed: prev.matchesPlayed + 1,
+            matchesWon: isMeWinner ? prev.matchesWon + 1 : prev.matchesWon,
+            trophies: isMeWinner ? prev.trophies + 25 : prev.trophies + 5,
+            seasonPoints: prev.seasonPoints + (isMeWinner ? (updatedRoom.isTournament ? 60 : 40) : 15),
+            xp: prev.xp + 50,
+            level: Math.floor((prev.xp + 50) / 100) + 1,
+          }));
+        }
+      },
+      (message, type) => {
+        showStatus(message, type, 3200);
       }
-    });
-  }, []);
+    );
+
+    return () => {
+      p2pEngineRef.current?.cleanup();
+    };
+  }, [showStatus]);
 
   // Persist profile
   useEffect(() => {
@@ -460,9 +487,9 @@ export default function App() {
     }
   }, []);
 
-  // When socket connects or activeRoom clears, process any pending room join
+  // When ready and activeRoom is cleared, process any pending room join (via Socket or WebRTC P2P)
   useEffect(() => {
-    if (socketConnected && pendingJoinRoomRef.current && !activeRoom) {
+    if (pendingJoinRoomRef.current && !activeRoom) {
       if (isRegistered) {
         const target = pendingJoinRoomRef.current;
         pendingJoinRoomRef.current = null;
@@ -570,7 +597,7 @@ export default function App() {
   // Matchmaking / Room actions
   const doQuickMatch = (isTournament: boolean = false, overrideProfile?: PlayerProfile) => {
     const currentProf = overrideProfile || profile;
-    const tabPlayerId = getTabPlayerId();
+    const tabPlayerId = currentProf.id || getTabPlayerId();
     if (socketConnected && socketRef.current?.connected) {
       showStatus('Finding match...', 'info');
       socketRef.current.emit('quick_match', {
@@ -582,11 +609,12 @@ export default function App() {
           mathDifficulty: currentProf.mathDifficulty || 'medium',
         },
       });
-    } else if (localEngineRef.current) {
-      setMyPlayerId('local_human');
-      myPlayerIdRef.current = 'local_human';
-      const room = localEngineRef.current.quickMatch(
+    } else if (p2pEngineRef.current) {
+      setMyPlayerId(tabPlayerId);
+      myPlayerIdRef.current = tabPlayerId;
+      const room = p2pEngineRef.current.quickMatch(
         {
+          id: tabPlayerId,
           username: currentProf.username,
           skinId: currentProf.skinId,
           mathDifficulty: currentProf.mathDifficulty || 'medium',
@@ -618,7 +646,7 @@ export default function App() {
     overrideProfile?: PlayerProfile
   ) => {
     const currentProf = overrideProfile || profile;
-    const tabPlayerId = getTabPlayerId();
+    const tabPlayerId = currentProf.id || getTabPlayerId();
 
     if (socketConnected && socketRef.current?.connected) {
       showStatus('Creating room...', 'info');
@@ -636,15 +664,16 @@ export default function App() {
           mathDifficulty: currentProf.mathDifficulty || 'medium',
         },
       });
-    } else if (localEngineRef.current) {
-      setMyPlayerId('local_human');
-      myPlayerIdRef.current = 'local_human';
-      const room = localEngineRef.current.createRoom(
+    } else if (p2pEngineRef.current) {
+      setMyPlayerId(tabPlayerId);
+      myPlayerIdRef.current = tabPlayerId;
+      const room = p2pEngineRef.current.createRoom(
         roomName || `${currentProf.username}'s Arena`,
         timerDuration,
         isPrivate,
         isTournament,
         {
+          id: tabPlayerId,
           username: currentProf.username,
           skinId: currentProf.skinId,
           mathDifficulty: currentProf.mathDifficulty || 'medium',
@@ -656,10 +685,10 @@ export default function App() {
       sounds.playDiceRoll();
       showStatus(
         isPrivate
-          ? 'Instant Room created! Add AI bots or start when ready.'
+          ? `Room ${room.id} created! Share the code or link with friends.`
           : 'Room created! Ready to play.',
         'success',
-        2500
+        2800
       );
     }
   };
@@ -704,35 +733,33 @@ export default function App() {
       return;
     }
 
-    const tabPlayerId = getTabPlayerId();
+    const currentProfileId = overrideProfile?.id || profile.id || getTabPlayerId();
     const effectiveUsername = overrideProfile?.username || profile.username;
     const effectiveSkinId = overrideProfile?.skinId || profile.skinId;
     const effectiveDifficulty = overrideProfile?.mathDifficulty || profile.mathDifficulty || 'medium';
+
+    setMyPlayerId(currentProfileId);
+    myPlayerIdRef.current = currentProfileId;
 
     if (socketConnected && socketRef.current?.connected) {
       showStatus(`Joining room ${cleanId}...`, 'info');
       socketRef.current.emit('join_room', {
         roomId: cleanId,
         player: {
-          id: tabPlayerId,
+          id: currentProfileId,
           username: effectiveUsername,
           skinId: effectiveSkinId,
           mathDifficulty: effectiveDifficulty,
         },
       });
-    } else if (localEngineRef.current) {
-      setMyPlayerId('local_human');
-      myPlayerIdRef.current = 'local_human';
-      const room = localEngineRef.current.joinRoom(cleanId, {
+    } else if (p2pEngineRef.current) {
+      showStatus(`Connecting to room ${cleanId}...`, 'info', 3000);
+      p2pEngineRef.current.joinRoom(cleanId, {
+        id: currentProfileId,
         username: effectiveUsername,
         skinId: effectiveSkinId,
         mathDifficulty: effectiveDifficulty,
       });
-      if (room) {
-        setActiveRoom(room);
-        sounds.playDiceRoll();
-        showStatus(`Joined room ${cleanId}!`, 'success', 2500);
-      }
     }
   };
 
@@ -754,63 +781,69 @@ export default function App() {
   const isCurrentRoomLocal = Boolean(
     activeRoom && (
       activeRoom.id.startsWith('LOCAL-') ||
-      activeRoom.players.some((p) => p.id === 'local_human') ||
-      !socketConnected
+      activeRoom.players.some((p) => p.id === 'local_human')
     )
   );
 
   const myEffectivePlayerId = useMemo(() => {
     if (!activeRoom) return myPlayerId;
-    if (isCurrentRoomLocal) return 'local_human';
 
     // 1. Direct match by active assigned myPlayerId
     const foundById = activeRoom.players.find((p) => p.id === myPlayerId);
     if (foundById) return foundById.id;
 
-    // 2. Match by unique tab session player ID
+    // 2. Match by current profile id
+    const foundByProfileId = activeRoom.players.find((p) => p.id === profile.id);
+    if (foundByProfileId) return foundByProfileId.id;
+
+    // 3. Match by unique tab session player ID
     const tabPlayerId = getTabPlayerId();
     const foundByTabId = activeRoom.players.find((p) => p.id === tabPlayerId);
     if (foundByTabId) return foundByTabId.id;
 
-    // 3. Match by ref
+    // 4. Match by ref
     if (myPlayerIdRef.current) {
       const foundByRef = activeRoom.players.find((p) => p.id === myPlayerIdRef.current);
       if (foundByRef) return foundByRef.id;
     }
 
-    return myPlayerId;
-  }, [activeRoom, isCurrentRoomLocal, myPlayerId]);
+    // 5. If local engine offline host
+    const foundLocal = activeRoom.players.find((p) => p.id === 'local_human');
+    if (foundLocal && p2pEngineRef.current?.getIsHost()) return 'local_human';
+
+    return myPlayerId || activeRoom.players[0]?.id || 'local_human';
+  }, [activeRoom, myPlayerId, profile.id]);
 
   const handleStartGame = () => {
-    if (isCurrentRoomLocal || !socketConnected) {
-      if (localEngineRef.current) localEngineRef.current.startGame();
-    } else if (socketConnected && socketRef.current && activeRoom) {
+    if (socketConnected && socketRef.current && activeRoom) {
       socketRef.current.emit('start_game', {
         roomId: activeRoom.id,
         playerId: myEffectivePlayerId,
       });
+    } else if (p2pEngineRef.current) {
+      p2pEngineRef.current.startGame();
     }
   };
 
   const handleAddBot = () => {
-    if (isCurrentRoomLocal || !socketConnected) {
-      if (localEngineRef.current) localEngineRef.current.addBot();
-    } else if (socketConnected && socketRef.current && activeRoom) {
+    if (socketConnected && socketRef.current && activeRoom) {
       socketRef.current.emit('add_bot', {
         roomId: activeRoom.id,
         playerId: myEffectivePlayerId,
       });
+    } else if (p2pEngineRef.current) {
+      p2pEngineRef.current.addBot();
     }
   };
 
   const handleLeaveRoom = () => {
-    if (isCurrentRoomLocal || !socketConnected) {
-      if (localEngineRef.current) localEngineRef.current.leaveRoom();
-    } else if (socketConnected && socketRef.current && activeRoom) {
+    if (socketConnected && socketRef.current && activeRoom) {
       socketRef.current.emit('leave_room', {
         roomId: activeRoom.id,
         playerId: myEffectivePlayerId,
       });
+    } else if (p2pEngineRef.current) {
+      p2pEngineRef.current.leaveRoom();
     }
     setActiveRoom(null);
   };
@@ -827,17 +860,13 @@ export default function App() {
 
   const handleRollDice = () => {
     sounds.playDiceRoll();
-    if (isCurrentRoomLocal) {
-      if (localEngineRef.current) {
-        localEngineRef.current.rollDice();
-      }
-    } else if (socketConnected && socketRef.current && activeRoom) {
+    if (socketConnected && socketRef.current && activeRoom) {
       socketRef.current.emit('roll_dice', {
         roomId: activeRoom.id,
         playerId: myEffectivePlayerId,
       });
-    } else if (localEngineRef.current) {
-      localEngineRef.current.rollDice();
+    } else if (p2pEngineRef.current) {
+      p2pEngineRef.current.rollDice();
     }
   };
 
@@ -889,18 +918,14 @@ export default function App() {
       setActiveRoom((prev) => (prev ? { ...prev, activeChallenge: null } : null));
     }
 
-    if (isCurrentRoomLocal) {
-      if (localEngineRef.current) {
-        localEngineRef.current.submitMathAnswer(answer);
-      }
-    } else if (socketConnected && socketRef.current && activeRoom) {
+    if (socketConnected && socketRef.current && activeRoom) {
       socketRef.current.emit('submit_math_answer', {
         roomId: activeRoom.id,
         answer,
         playerId: currentMyId,
       });
-    } else if (localEngineRef.current) {
-      localEngineRef.current.submitMathAnswer(answer);
+    } else if (p2pEngineRef.current) {
+      p2pEngineRef.current.submitMathAnswer(answer);
     }
   };
 
@@ -915,17 +940,13 @@ export default function App() {
       return prev;
     });
 
-    if (isCurrentRoomLocal) {
-      if (localEngineRef.current) {
-        localEngineRef.current.handleTimeout();
-      }
-    } else if (socketConnected && socketRef.current && activeRoom) {
+    if (socketConnected && socketRef.current && activeRoom) {
       socketRef.current.emit('math_timeout', {
         roomId: activeRoom.id,
         playerId: currentMyId,
       });
-    } else if (localEngineRef.current) {
-      localEngineRef.current.handleTimeout();
+    } else if (p2pEngineRef.current) {
+      p2pEngineRef.current.handleTimeout();
     }
     setProfile((prev) => ({
       ...prev,
@@ -935,14 +956,10 @@ export default function App() {
 
   const handlePlayAgain = () => {
     sounds.playDiceRoll();
-    if (isCurrentRoomLocal) {
-      if (localEngineRef.current) {
-        localEngineRef.current.restartGame();
-      }
-    } else if (socketConnected && socketRef.current && activeRoom) {
+    if (socketConnected && socketRef.current && activeRoom) {
       socketRef.current.emit('restart_game', { roomId: activeRoom.id });
-    } else if (localEngineRef.current) {
-      localEngineRef.current.restartGame();
+    } else if (p2pEngineRef.current) {
+      p2pEngineRef.current.restartGame();
     }
   };
 
